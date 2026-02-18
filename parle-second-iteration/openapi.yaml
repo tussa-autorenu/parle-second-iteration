@@ -1,0 +1,101 @@
+openapi: 3.0.3
+info:
+  title: Parle Tesla Control Service
+  version: 0.1.0
+servers:
+  - url: http://localhost:8080
+security:
+  - ParleApiKey: []
+components:
+  securitySchemes:
+    ParleApiKey:
+      type: apiKey
+      in: header
+      name: x-parle-api-key
+  schemas:
+    FailResponse:
+      type: object
+      properties:
+        ok: { type: boolean, example: false }
+        error:
+          type: object
+          properties:
+            reason: { type: string, example: offline }
+            message: { type: string }
+            details: { nullable: true }
+paths:
+  /vehicles:
+    get:
+      summary: List vehicles with cached telemetry
+      responses:
+        "200": { description: OK }
+  /vehicles/{id}:
+    get:
+      summary: Get vehicle + state (refreshes if needed)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FailResponse" }
+  /vehicles/{id}/wake:
+    post:
+      summary: Wake
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+  /vehicles/{id}/unlock:
+    post:
+      summary: Unlock (wake-first)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+  /vehicles/{id}/enable-drive:
+    post:
+      summary: Enable drive (wake-first)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+  /vehicles/{id}/lock:
+    post:
+      summary: Lock (wake-first)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+  /vehicles/{id}/ready:
+    post:
+      summary: Ready Vehicle (wake -> unlock -> enable-drive)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+  /logs/commands:
+    get:
+      summary: List command logs
+      responses:
+        "200": { description: OK }

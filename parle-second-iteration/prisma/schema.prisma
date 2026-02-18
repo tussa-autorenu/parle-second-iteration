@@ -1,0 +1,101 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OnlineStatus {
+  AWAKE
+  ASLEEP
+  OFFLINE
+  UNKNOWN
+}
+
+enum LockStatus {
+  LOCKED
+  UNLOCKED
+  UNKNOWN
+}
+
+enum CommandType {
+  WAKE
+  UNLOCK
+  ENABLE_DRIVE
+  LOCK
+  HONK
+  FLASH
+  PRECONDITION_ON
+  SEND_DESTINATION
+  READY_VEHICLE
+}
+
+enum CommandResult {
+  SUCCESS
+  FAIL
+}
+
+model Vehicle {
+  id             String   @id @db.VarChar(64)
+  teslaVehicleId String   @db.VarChar(64)
+  vin            String   @db.VarChar(64)
+  friendlyName   String?  @db.VarChar(128)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  telemetry TelemetrySnapshot[]
+  commands  CommandLog[]
+
+  @@index([teslaVehicleId])
+  @@index([vin])
+}
+
+model TelemetrySnapshot {
+  id             String       @id @default(cuid())
+  vehicleId       String
+  batteryPercent  Int?
+  onlineStatus    OnlineStatus @default(UNKNOWN)
+  lockStatus      LockStatus   @default(UNKNOWN)
+  lastLat         Float?
+  lastLng         Float?
+  lastSeenAt      DateTime     @default(now())
+  source          String       @default("tesla")
+  createdAt       DateTime     @default(now())
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([vehicleId, lastSeenAt(sort: Desc)])
+}
+
+model CommandLog {
+  id           String       @id @default(cuid())
+  requestId    String       @db.VarChar(128)
+  vehicleId    String
+  command      CommandType
+  triggeredBy  String       @db.VarChar(128)
+  result       CommandResult
+  errorReason  String?      @db.VarChar(64)
+  errorMessage String?      @db.VarChar(512)
+  teslaStatus  Int?
+  createdAt    DateTime     @default(now())
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@unique([vehicleId, requestId, command])
+  @@index([vehicleId, createdAt(sort: Desc)])
+  @@index([triggeredBy, createdAt(sort: Desc)])
+}
+
+model TeslaConnection {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  accessToken  String
+  refreshToken String
+  expiresAt    DateTime
+  scopes       String?  // space-delimited string is fine for MVP
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
