@@ -57,8 +57,25 @@ export async function buildApp() {
   // Service-to-service auth (x-parle-api-key)
   await app.register(authPlugin);
 
-  // Health
+  // Health (public in dev, protected in production — handled by authPlugin)
   app.get("/healthz", async (_req, reply) => ok(reply, { ok: true }));
+
+  // ── Debug route (development only) ──────────────────────
+  if (config.nodeEnv === "development") {
+    app.get("/debug/env", async (_req, reply) => {
+      return ok(reply, {
+        NODE_ENV: config.nodeEnv,
+        PORT: config.port,
+        LOG_LEVEL: config.logLevel,
+        PARLE_API_KEY_set: typeof config.parleApiKey === "string" && config.parleApiKey.length > 0,
+        PARLE_API_KEY_length: config.parleApiKey?.length ?? 0,
+        DATABASE_URL_set: typeof config.databaseUrl === "string" && config.databaseUrl.length > 0,
+        TESLA_BASE_URL: config.teslaBaseUrl,
+        TESLA_BEARER_TOKEN_set: typeof config.teslaBearerToken === "string" && config.teslaBearerToken.length > 0,
+        REDIS_URL_set: typeof config.redisUrl === "string" && config.redisUrl.length > 0,
+      });
+    });
+  }
 
   // Routes
   await app.register(teslaAuthRoutes);

@@ -11,9 +11,15 @@ declare module "fastify" {
 }
 
 /** Route prefixes that skip API-key auth in non-production environments. */
-const DEV_PUBLIC_PREFIXES = ["/healthz", "/docs"];
+const DEV_PUBLIC_PREFIXES = ["/healthz", "/docs", "/debug"];
 
 export const authPlugin: FastifyPluginAsync = fp(async (app) => {
+  // ── Startup diagnostic (never prints the raw secret) ──
+  const keyLoaded = typeof config.parleApiKey === "string" && config.parleApiKey.length > 0;
+  app.log.info(
+    `PARLE_API_KEY loaded: ${keyLoaded}, length=${config.parleApiKey?.length ?? 0}`,
+  );
+
   app.addHook("preHandler", async (req) => {
     // In non-production environments, allow public routes without auth
     if (config.nodeEnv !== "production") {
@@ -25,9 +31,18 @@ export const authPlugin: FastifyPluginAsync = fp(async (app) => {
       }
     }
 
-    const apiKey = req.headers["x-parle-api-key"];
+    const rawApiKey = req.headers["x-parle-api-key"];
 
-    if (typeof apiKey !== "string" || !apiKey) {
+    // ── Per-request diagnostic (never prints the raw secret) ──
+    if (typeof rawApiKey === "string") {
+      req.log.debug(
+        `Incoming x-parle-api-key: present=true, length=${rawApiKey.length}`,
+      );
+    } else {
+      req.log.debug("Incoming x-parle-api-key: present=false");
+    }
+
+    if (typeof rawApiKey !== "string" || !rawApiKey.trim()) {
       throw new ApiError(
         401,
         "auth_error",
@@ -35,7 +50,8 @@ export const authPlugin: FastifyPluginAsync = fp(async (app) => {
       );
     }
 
-    if (apiKey !== config.parleApiKey) {
+    // Trim both sides to defend against .env trailing whitespace / header padding
+    if (rawApiKey.trim() !== config.parleApiKey.trim()) {
       throw new ApiError(401, "auth_error", "Invalid x-parle-api-key");
     }
 
