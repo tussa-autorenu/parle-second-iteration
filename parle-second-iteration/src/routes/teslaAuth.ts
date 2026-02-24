@@ -1,4 +1,4 @@
-import { FastifyInstance } from "fastify";
+import type { FastifyInstance } from "fastify";
 import crypto from "crypto";
 import axios from "axios";
 import { prisma } from "../db/prisma.js";
@@ -18,10 +18,25 @@ function makeChallenge(verifier: string) {
   return base64url(crypto.createHash("sha256").update(verifier).digest());
 }
 
+interface StartQuery {
+  userId?: string;
+}
+
+interface CallbackQuery {
+  code?: string;
+  state?: string;
+}
+
+interface TeslaTokenResponse {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+}
+
 export async function teslaAuthRoutes(app: FastifyInstance) {
   // 1) start: redirect to Tesla auth
-  app.get("/auth/tesla/start", async (req, reply) => {
-    const userId = (req.query as any).userId as string | undefined;
+  app.get<{ Querystring: StartQuery }>("/auth/tesla/start", async (req, reply) => {
+    const userId = req.query.userId;
     if (!userId) return reply.code(400).send({ ok: false, error: "missing userId" });
 
     const verifier = makeVerifier();
@@ -49,8 +64,8 @@ export async function teslaAuthRoutes(app: FastifyInstance) {
   });
 
   // 2) callback: exchange code -> tokens, store
-  app.get("/auth/tesla/callback", async (req, reply) => {
-    const { code, state } = req.query as any;
+  app.get<{ Querystring: CallbackQuery }>("/auth/tesla/callback", async (req, reply) => {
+    const { code, state } = req.query;
 
     const savedState = req.cookies["tesla_state"];
     const verifier = req.cookies["tesla_verifier"];
@@ -73,7 +88,8 @@ export async function teslaAuthRoutes(app: FastifyInstance) {
       { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
     );
 
-    const { access_token, refresh_token, expires_in } = tokenRes.data;
+    const { access_token, refresh_token, expires_in } =
+      tokenRes.data as TeslaTokenResponse;
 
     const expiresAt = new Date(Date.now() + Number(expires_in) * 1000);
 

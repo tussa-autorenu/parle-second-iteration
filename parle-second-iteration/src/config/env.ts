@@ -1,11 +1,15 @@
 import "dotenv/config";
 import { z } from "zod";
 
+const isProduction = process.env.NODE_ENV === "production";
+
 const Env = z.object({
   PORT: z.string().default("8080"),
   NODE_ENV: z.string().default("development"),
   LOG_LEVEL: z.string().default("info"),
-  PARLE_API_KEY: z.string().min(8),
+  PARLE_API_KEY: isProduction
+    ? z.string().min(8)
+    : z.string().default("dev_key_change_me"),
   DATABASE_URL: z.string().min(10),
   REDIS_URL: z.string().url().optional(),
   CACHE_TTL_SECONDS: z.string().default("10"),

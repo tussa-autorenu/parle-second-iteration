@@ -75,8 +75,8 @@ Back in the first PowerShell window:
 npm run dev
 ```
 
-Swagger UI: http://localhost:8080/docs  
-Health check: http://localhost:8080/healthz
+Swagger UI: http://localhost:8080/docs  (no API key needed in dev)
+Health check: http://localhost:8080/healthz  (no API key needed in dev)
 
 ---
 
@@ -87,39 +87,62 @@ Health check: http://localhost:8080/healthz
 npm test
 ```
 
-### B) Manual API tests (copy/paste)
+### B) Testing /healthz
 
-All calls must include:
+In **development** (`NODE_ENV=development`, the default), `/healthz` and `/docs` do **not** require an API key.
+In **production**, every route including `/healthz` requires `x-parle-api-key`.
+
+#### curl.exe (PowerShell — use curl.exe, not the curl alias)
+```powershell
+# Health check — no API key needed in dev
+curl.exe http://localhost:8080/healthz
+
+# With API key (always works)
+curl.exe -H "x-parle-api-key: dev_key_change_me" http://localhost:8080/healthz
+```
+
+#### Invoke-WebRequest (native PowerShell)
+```powershell
+# Health check — no API key needed in dev
+Invoke-WebRequest -Uri http://localhost:8080/healthz | Select-Object -ExpandProperty Content
+
+# With API key
+Invoke-WebRequest -Uri http://localhost:8080/healthz -Headers @{ "x-parle-api-key" = "dev_key_change_me" } | Select-Object -ExpandProperty Content
+```
+
+### C) Manual API tests (copy/paste)
+
+All **vehicle / command / log** endpoints require the API key in every environment:
 - `x-parle-api-key: <matches your .env PARLE_API_KEY>`
 
 #### 1) List vehicles
-```bash
-curl -H "x-parle-api-key: dev_key_change_me" http://localhost:8080/vehicles
+```powershell
+curl.exe -H "x-parle-api-key: dev_key_change_me" http://localhost:8080/vehicles
 ```
 
 #### 2) Get a vehicle + state
-```bash
-curl -H "x-parle-api-key: dev_key_change_me" http://localhost:8080/vehicles/derby-01
+```powershell
+curl.exe -H "x-parle-api-key: dev_key_change_me" http://localhost:8080/vehicles/derby-01
 ```
 
 #### 3) Unlock (wake-first)
-```bash
-curl -X POST -H "x-parle-api-key: dev_key_change_me" http://localhost:8080/vehicles/derby-01/unlock
+```powershell
+curl.exe -X POST -H "x-parle-api-key: dev_key_change_me" http://localhost:8080/vehicles/derby-01/unlock
 ```
 
 #### 4) Enable drive (wake-first)
-```bash
-curl -X POST -H "x-parle-api-key: dev_key_change_me" http://localhost:8080/vehicles/derby-01/enable-drive
+```powershell
+curl.exe -X POST -H "x-parle-api-key: dev_key_change_me" http://localhost:8080/vehicles/derby-01/enable-drive
 ```
 
 #### 5) Ready shortcut (wake -> unlock -> enable-drive)
-```bash
-curl -X POST -H "x-parle-api-key: dev_key_change_me" http://localhost:8080/vehicles/derby-01/ready
+```powershell
+curl.exe -X POST -H "x-parle-api-key: dev_key_change_me" http://localhost:8080/vehicles/derby-01/ready
 ```
 
 #### 6) View command logs
-```bash
-curl -H "x-parle-api-key: dev_key_change_me" "http://localhost:8080/logs/commands?limit=20"
+```powershell
+curl.exe -H "x-parle-api-key: dev_key_change_me" "http://localhost:8080/logs/commands?limit=20"
 ```
 
 ---

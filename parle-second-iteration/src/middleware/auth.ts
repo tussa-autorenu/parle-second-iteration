@@ -10,12 +10,35 @@ declare module "fastify" {
   }
 }
 
+/** Route prefixes that skip API-key auth in non-production environments. */
+const DEV_PUBLIC_PREFIXES = ["/healthz", "/docs"];
+
 export const authPlugin: FastifyPluginAsync = fp(async (app) => {
   app.addHook("preHandler", async (req) => {
-    const apiKey = req.headers["x-parle-api-key"];
-    if (!apiKey || apiKey !== config.parleApiKey) {
-      throw new ApiError(401, "auth_error", "Missing/invalid service API key");
+    // In non-production environments, allow public routes without auth
+    if (config.nodeEnv !== "production") {
+      const isPublic = DEV_PUBLIC_PREFIXES.some((p) => req.url.startsWith(p));
+      if (isPublic) {
+        req.triggeredBy = String(req.headers["x-triggered-by"] ?? "system");
+        req.requestId = String(req.headers["x-request-id"] ?? "");
+        return;
+      }
     }
+
+    const apiKey = req.headers["x-parle-api-key"];
+
+    if (typeof apiKey !== "string" || !apiKey) {
+      throw new ApiError(
+        401,
+        "auth_error",
+        'Missing header: send "x-parle-api-key"',
+      );
+    }
+
+    if (apiKey !== config.parleApiKey) {
+      throw new ApiError(401, "auth_error", "Invalid x-parle-api-key");
+    }
+
     req.triggeredBy = String(req.headers["x-triggered-by"] ?? "system");
     req.requestId = String(req.headers["x-request-id"] ?? "");
   });
