@@ -10,7 +10,7 @@ const Env = z.object({
   REDIS_URL: z.string().url().optional(),
   CACHE_TTL_SECONDS: z.string().default("10"),
   TESLA_BASE_URL: z.string().url(),
-  TESLA_BEARER_TOKEN: z.string().min(1),
+  TESLA_BEARER_TOKEN: z.string().min(1).optional(),
   WAKE_TIMEOUT_SECONDS: z.string().default("25"),
   WAKE_POLL_INTERVAL_MS: z.string().default("1500"),
   COMMAND_RETRY_COUNT: z.string().default("1"),
