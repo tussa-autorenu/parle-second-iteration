@@ -9,7 +9,7 @@ function base64url(input: Buffer) {
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/g, "");
-} 
+}
 
 function makeVerifier() {
   return base64url(crypto.randomBytes(32));
@@ -41,6 +41,7 @@ export async function teslaAuthRoutes(app: FastifyInstance) {
 
   app.get<{ Querystring: StartQuery }>("/auth/tesla/start", async (req, reply) => {
     const userId = req.query.userId;
+
     if (!userId) {
       return reply.code(400).send({ ok: false, error: "missing userId" });
     }
@@ -49,26 +50,16 @@ export async function teslaAuthRoutes(app: FastifyInstance) {
     const challenge = makeChallenge(verifier);
     const state = crypto.randomBytes(16).toString("hex");
 
-    reply.setCookie("tesla_state", state, {
+    const cookieOpts = {
       httpOnly: true,
       secure: isProd,
-      sameSite: "lax",
+      sameSite: isProd ? ("none" as const) : ("lax" as const),
       path: "/",
-    });
+    };
 
-    reply.setCookie("tesla_verifier", verifier, {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: "lax",
-      path: "/",
-    });
-
-    reply.setCookie("tesla_userId", userId, {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: "lax",
-      path: "/",
-    });
+    reply.setCookie("tesla_state", state, cookieOpts);
+    reply.setCookie("tesla_verifier", verifier, cookieOpts);
+    reply.setCookie("tesla_userId", userId, cookieOpts);
 
     const params = new URLSearchParams({
       client_id: process.env.TESLA_CLIENT_ID!,
@@ -98,6 +89,17 @@ export async function teslaAuthRoutes(app: FastifyInstance) {
     const savedState = req.cookies["tesla_state"];
     const verifier = req.cookies["tesla_verifier"];
     const userId = req.cookies["tesla_userId"];
+
+    req.log.info(
+      {
+        hasCode: Boolean(code),
+        hasState: Boolean(state),
+        hasSavedState: Boolean(savedState),
+        hasVerifier: Boolean(verifier),
+        hasUserId: Boolean(userId),
+      },
+      "tesla oauth callback cookie check"
+    );
 
     if (!code || !state || !savedState || state !== savedState || !verifier || !userId) {
       return reply.code(400).send({ ok: false, error: "invalid oauth state" });
@@ -147,7 +149,7 @@ export async function teslaAuthRoutes(app: FastifyInstance) {
 
       return reply.redirect(`${process.env.APP_DEEP_LINK}?linked=1`);
     } catch (err) {
-      req.log.error(err);
+      req.log.error(err, "Tesla token exchange failed");
       return reply.redirect(
         `${process.env.APP_DEEP_LINK}?linked=0&error=token_exchange_failed`
       );
