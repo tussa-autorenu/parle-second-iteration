@@ -10,8 +10,27 @@ declare module "fastify" {
   }
 }
 
-/** Route prefixes that skip API-key auth in non-production environments. */
-const DEV_PUBLIC_PREFIXES = ["/healthz", "/docs", "/debug"];
+/**
+ * Routes that NEVER require x-parle-api-key (all environments).
+ * These are user-facing OAuth endpoints, not service-to-service.
+ */
+const ALWAYS_PUBLIC_PREFIXES = [
+  "/auth/tesla/start",
+  "/auth/tesla/callback",
+];
+
+/** Routes that skip API-key auth in non-production environments only. */
+const DEV_PUBLIC_PREFIXES = ["/healthz", "/docs", "/documentation", "/debug"];
+
+function isPublicRoute(url: string): boolean {
+  // Strip querystring so "/auth/tesla/start?userId=x" matches the prefix
+  const path = url.split("?")[0];
+  return ALWAYS_PUBLIC_PREFIXES.some((p) => path.startsWith(p));
+}
+
+function isDevPublicRoute(url: string): boolean {
+  return DEV_PUBLIC_PREFIXES.some((p) => url.startsWith(p));
+}
 
 export const authPlugin: FastifyPluginAsync = fp(async (app) => {
   // ── Startup diagnostic (never prints the raw secret) ──
@@ -21,14 +40,18 @@ export const authPlugin: FastifyPluginAsync = fp(async (app) => {
   );
 
   app.addHook("preHandler", async (req) => {
-    // In non-production environments, allow public routes without auth
-    if (config.nodeEnv !== "production") {
-      const isPublic = DEV_PUBLIC_PREFIXES.some((p) => req.url.startsWith(p));
-      if (isPublic) {
-        req.triggeredBy = String(req.headers["x-triggered-by"] ?? "system");
-        req.requestId = String(req.headers["x-request-id"] ?? "");
-        return;
-      }
+    // Always-public routes (OAuth redirects) — skip auth in every environment
+    if (isPublicRoute(req.url)) {
+      req.triggeredBy = String(req.headers["x-triggered-by"] ?? "system");
+      req.requestId = String(req.headers["x-request-id"] ?? "");
+      return;
+    }
+
+    // In non-production environments, allow dev-public routes without auth
+    if (config.nodeEnv !== "production" && isDevPublicRoute(req.url)) {
+      req.triggeredBy = String(req.headers["x-triggered-by"] ?? "system");
+      req.requestId = String(req.headers["x-request-id"] ?? "");
+      return;
     }
 
     const rawApiKey = req.headers["x-parle-api-key"];
