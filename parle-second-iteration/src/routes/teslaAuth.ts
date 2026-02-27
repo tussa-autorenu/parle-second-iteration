@@ -37,15 +37,6 @@ interface TeslaTokenResponse {
 }
 
 export async function teslaAuthRoutes(app: FastifyInstance) {
-  const isProd = process.env.NODE_ENV === "production";
-
-  const cookieOpts = {
-    httpOnly: true,
-    secure: isProd,
-    sameSite: isProd ? ("none" as const) : ("lax" as const),
-    path: "/",
-  };
-
   app.get<{ Querystring: StartQuery }>("/auth/tesla/start", async (req, reply) => {
     const userId = req.query.userId;
 
@@ -56,10 +47,16 @@ export async function teslaAuthRoutes(app: FastifyInstance) {
     const verifier = makeVerifier();
     const challenge = makeChallenge(verifier);
     const state = crypto.randomBytes(16).toString("hex");
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min
 
-    reply.setCookie("tesla_state", state, cookieOpts);
-    reply.setCookie("tesla_verifier", verifier, cookieOpts);
-    reply.setCookie("tesla_userId", userId, cookieOpts);
+    await prisma.teslaOAuthSession.create({
+      data: {
+        state,
+        verifier,
+        userId,
+        expiresAt,
+      },
+    });
 
     const params = new URLSearchParams({
       client_id: process.env.TESLA_CLIENT_ID!,
@@ -86,23 +83,39 @@ export async function teslaAuthRoutes(app: FastifyInstance) {
       );
     }
 
-    const savedState = req.cookies["tesla_state"];
-    const verifier = req.cookies["tesla_verifier"];
-    const userId = req.cookies["tesla_userId"];
-
     req.log.info(
       {
         hasCode: Boolean(code),
         hasState: Boolean(state),
-        hasSavedState: Boolean(savedState),
-        hasVerifier: Boolean(verifier),
-        hasUserId: Boolean(userId),
       },
-      "tesla oauth callback cookie check"
+      "tesla oauth callback query check"
     );
 
-    if (!code || !state || !savedState || state !== savedState || !verifier || !userId) {
+    if (!code || !state) {
       return reply.code(400).send({ ok: false, error: "invalid oauth state" });
+    }
+
+    const session = await prisma.teslaOAuthSession.findUnique({
+      where: { state },
+    });
+
+    req.log.info(
+      {
+        hasSession: Boolean(session),
+        hasVerifier: Boolean(session?.verifier),
+        hasUserId: Boolean(session?.userId),
+        expired: session ? session.expiresAt.getTime() < Date.now() : null,
+      },
+      "tesla oauth callback session lookup"
+    );
+
+    if (!session) {
+      return reply.code(400).send({ ok: false, error: "invalid oauth state" });
+    }
+
+    if (session.expiresAt.getTime() < Date.now()) {
+      await prisma.teslaOAuthSession.delete({ where: { state } });
+      return reply.code(400).send({ ok: false, error: "oauth session expired" });
     }
 
     try {
@@ -114,7 +127,7 @@ export async function teslaAuthRoutes(app: FastifyInstance) {
           client_secret: process.env.TESLA_CLIENT_SECRET!,
           redirect_uri: process.env.TESLA_REDIRECT_URI!,
           code,
-          code_verifier: verifier,
+          code_verifier: session.verifier,
         }),
         {
           headers: {
@@ -129,23 +142,23 @@ export async function teslaAuthRoutes(app: FastifyInstance) {
       const expiresAt = new Date(Date.now() + Number(expires_in) * 1000);
 
       await prisma.teslaAccount.upsert({
-        where: { userId },
+        where: { userId: session.userId },
         update: {
           accessToken: access_token,
           refreshToken: refresh_token,
           expiresAt,
         },
         create: {
-          userId,
+          userId: session.userId,
           accessToken: access_token,
           refreshToken: refresh_token,
           expiresAt,
         },
       });
 
-      reply.clearCookie("tesla_state", cookieOpts);
-      reply.clearCookie("tesla_verifier", cookieOpts);
-      reply.clearCookie("tesla_userId", cookieOpts);
+      await prisma.teslaOAuthSession.delete({
+        where: { state },
+      });
 
       return reply.redirect(`${process.env.APP_DEEP_LINK}?linked=1`);
     } catch (err) {
