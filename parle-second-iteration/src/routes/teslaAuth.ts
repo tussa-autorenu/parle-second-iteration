@@ -39,6 +39,13 @@ interface TeslaTokenResponse {
 export async function teslaAuthRoutes(app: FastifyInstance) {
   const isProd = process.env.NODE_ENV === "production";
 
+  const cookieOpts = {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? ("none" as const) : ("lax" as const),
+    path: "/",
+  };
+
   app.get<{ Querystring: StartQuery }>("/auth/tesla/start", async (req, reply) => {
     const userId = req.query.userId;
 
@@ -49,13 +56,6 @@ export async function teslaAuthRoutes(app: FastifyInstance) {
     const verifier = makeVerifier();
     const challenge = makeChallenge(verifier);
     const state = crypto.randomBytes(16).toString("hex");
-
-    const cookieOpts = {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: isProd ? ("none" as const) : ("lax" as const),
-      path: "/",
-    };
 
     reply.setCookie("tesla_state", state, cookieOpts);
     reply.setCookie("tesla_verifier", verifier, cookieOpts);
@@ -143,9 +143,9 @@ export async function teslaAuthRoutes(app: FastifyInstance) {
         },
       });
 
-      reply.clearCookie("tesla_state", { path: "/" });
-      reply.clearCookie("tesla_verifier", { path: "/" });
-      reply.clearCookie("tesla_userId", { path: "/" });
+      reply.clearCookie("tesla_state", cookieOpts);
+      reply.clearCookie("tesla_verifier", cookieOpts);
+      reply.clearCookie("tesla_userId", cookieOpts);
 
       return reply.redirect(`${process.env.APP_DEEP_LINK}?linked=1`);
     } catch (err) {
