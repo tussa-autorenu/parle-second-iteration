@@ -15,12 +15,13 @@ declare module "fastify" {
  * These are user-facing OAuth endpoints, not service-to-service.
  */
 const ALWAYS_PUBLIC_PREFIXES = [
+  "/healthz",
   "/auth/tesla/start",
   "/auth/tesla/callback",
 ];
 
 /** Routes that skip API-key auth in non-production environments only. */
-const DEV_PUBLIC_PREFIXES = ["/healthz", "/docs", "/documentation", "/debug"];
+const DEV_PUBLIC_PREFIXES = ["/docs", "/documentation", "/debug"];
 
 function isPublicRoute(url: string): boolean {
   // Strip querystring so "/auth/tesla/start?userId=x" matches the prefix
