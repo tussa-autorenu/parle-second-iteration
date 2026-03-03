@@ -2,6 +2,9 @@ import type { FastifyInstance } from "fastify";
 import crypto from "crypto";
 import axios from "axios";
 import { prisma } from "../db/prisma.js";
+import { getTeslaLinkStatus } from "../services/teslaAccountService.js";
+import { ApiError } from "../utils/errors.js";
+import { ok } from "../utils/http.js";
 
 function base64url(input: Buffer) {
   return input
@@ -168,4 +171,25 @@ export async function teslaAuthRoutes(app: FastifyInstance) {
       );
     }
   });
+
+  // ── Status: is the current user's Tesla account linked? ──
+  // Protected route — requires x-parle-api-key + x-triggered-by:<userId>
+  app.get(
+    "/auth/tesla/status",
+    { schema: { tags: ["tesla-auth"] } },
+    async (req, reply) => {
+      const userId = req.triggeredBy?.trim();
+
+      if (!userId || userId === "system") {
+        throw new ApiError(
+          400,
+          "bad_request",
+          "x-triggered-by header must contain the user ID",
+        );
+      }
+
+      const status = await getTeslaLinkStatus(userId);
+      return ok(reply, status);
+    },
+  );
 }
