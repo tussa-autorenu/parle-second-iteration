@@ -1,5 +1,5 @@
 import fp from "fastify-plugin";
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import { config } from "../config/env.js";
 import { ApiError } from "../utils/errors.js";
 
@@ -12,25 +12,42 @@ declare module "fastify" {
 
 /**
  * Routes that NEVER require x-parle-api-key (all environments).
- * These are user-facing OAuth endpoints, not service-to-service.
+ * Includes OAuth endpoints, health check, and Tesla domain verification.
  */
 const ALWAYS_PUBLIC_PREFIXES = [
   "/healthz",
   "/auth/tesla/start",
   "/auth/tesla/callback",
+  "/.well-known",
 ];
 
 /** Routes that skip API-key auth in non-production environments only. */
 const DEV_PUBLIC_PREFIXES = ["/docs", "/documentation", "/debug"];
 
-function isPublicRoute(url: string): boolean {
-  // Strip querystring so "/auth/tesla/start?userId=x" matches the prefix
-  const path = url.split("?")[0];
+/**
+ * Extract the pathname from the raw Node.js HTTP URL.
+ * Uses req.raw.url (not req.url) because Fastify/plugins may rewrite req.url
+ * and this must work reliably behind proxies (AWS ALB, etc.).
+ */
+function rawPath(req: FastifyRequest): string {
+  const raw = req.raw.url ?? req.url;
+  return raw.split("?")[0];
+}
+
+function isPublicRoute(req: FastifyRequest): boolean {
+  const path = rawPath(req);
   return ALWAYS_PUBLIC_PREFIXES.some((p) => path.startsWith(p));
 }
 
-function isDevPublicRoute(url: string): boolean {
-  return DEV_PUBLIC_PREFIXES.some((p) => url.startsWith(p));
+function isDevPublicRoute(req: FastifyRequest): boolean {
+  const path = rawPath(req);
+  return DEV_PUBLIC_PREFIXES.some((p) => path.startsWith(p));
+}
+
+/** Set identity headers with safe defaults. */
+function setIdentity(req: FastifyRequest): void {
+  req.triggeredBy = String(req.headers["x-triggered-by"] ?? "system");
+  req.requestId = String(req.headers["x-request-id"] ?? "");
 }
 
 export const authPlugin: FastifyPluginAsync = fp(async (app) => {
@@ -40,18 +57,16 @@ export const authPlugin: FastifyPluginAsync = fp(async (app) => {
     `PARLE_API_KEY loaded: ${keyLoaded}, length=${config.parleApiKey?.length ?? 0}`,
   );
 
-  app.addHook("preHandler", async (req) => {
-    // Always-public routes (OAuth redirects) — skip auth in every environment
-    if (isPublicRoute(req.url)) {
-      req.triggeredBy = String(req.headers["x-triggered-by"] ?? "system");
-      req.requestId = String(req.headers["x-request-id"] ?? "");
+  app.addHook("onRequest", async (req) => {
+    // Always-public routes — skip auth in every environment
+    if (isPublicRoute(req)) {
+      setIdentity(req);
       return;
     }
 
     // In non-production environments, allow dev-public routes without auth
-    if (config.nodeEnv !== "production" && isDevPublicRoute(req.url)) {
-      req.triggeredBy = String(req.headers["x-triggered-by"] ?? "system");
-      req.requestId = String(req.headers["x-request-id"] ?? "");
+    if (config.nodeEnv !== "production" && isDevPublicRoute(req)) {
+      setIdentity(req);
       return;
     }
 
@@ -79,7 +94,6 @@ export const authPlugin: FastifyPluginAsync = fp(async (app) => {
       throw new ApiError(401, "auth_error", "Invalid x-parle-api-key");
     }
 
-    req.triggeredBy = String(req.headers["x-triggered-by"] ?? "system");
-    req.requestId = String(req.headers["x-request-id"] ?? "");
+    setIdentity(req);
   });
 });

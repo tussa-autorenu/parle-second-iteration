@@ -156,8 +156,45 @@ Required headers:
 
 ---
 
+## 7) Tesla Fleet Public Key Hosting
+
+Tesla requires your domain to serve a public key at a well-known URL so it can verify your app.
+
+**Final URL Tesla uses:**
+```
+https://api.parlekeys.com/.well-known/appspecific/com.tesla.3p.public-key.pem
+```
+
+**Where the file lives in this repo:**
+```
+public/.well-known/appspecific/com.tesla.3p.public-key.pem
+```
+
+**To replace the placeholder with your real key:**
+1. Generate your key pair (if not already done):
+   ```bash
+   openssl ecparam -name prime256v1 -genkey -noout -out private-key.pem
+   openssl ec -in private-key.pem -pubout -out public-key.pem
+   ```
+2. Paste the contents of `public-key.pem` into:
+   `public/.well-known/appspecific/com.tesla.3p.public-key.pem`
+
+**Test locally (no API key needed — this path is public in all environments):**
+```powershell
+npm run dev
+curl.exe http://localhost:8080/.well-known/appspecific/com.tesla.3p.public-key.pem
+# Expected: HTTP 200 with PEM content, no auth header required
+```
+
+**Smoke test in a browser:**
+Open this URL directly — it must return 200 and show the PEM text with no login/headers:
+- Local: `http://localhost:8080/.well-known/appspecific/com.tesla.3p.public-key.pem`
+- Production: `https://api.parlekeys.com/.well-known/appspecific/com.tesla.3p.public-key.pem`
+
+---
+
 ## Notes
-- This version uses **in-memory caching** for telemetry. That’s fine for local dev.
+- This version uses **in-memory caching** for telemetry. That's fine for local dev.
 - For production scale, add Redis later so multiple instances share cache.
 
 

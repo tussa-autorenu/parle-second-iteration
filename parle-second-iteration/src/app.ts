@@ -1,7 +1,10 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
+import fastifyStatic from "@fastify/static";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import cookie from "@fastify/cookie";
@@ -14,6 +17,8 @@ import { logsRoutes } from "./routes/logs.js";
 import { teslaAuthRoutes } from "./routes/teslaAuth.js";
 
 import { fail, ok } from "./utils/http.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export async function buildApp() {
   const app = Fastify({
@@ -44,6 +49,14 @@ export async function buildApp() {
     max: 120,
     timeWindow: "1 minute",
     keyGenerator: (req) => String(req.headers["x-forwarded-for"] ?? req.ip),
+  });
+
+  // Static files — serves public/ at site root (Tesla Fleet public key, etc.)
+  await app.register(fastifyStatic, {
+    root: path.join(__dirname, "..", "public"),
+    prefix: "/",
+    decorateReply: false, // avoid conflict with swagger-ui's own static plugin
+    list: false,          // no directory listing
   });
 
   // Swagger

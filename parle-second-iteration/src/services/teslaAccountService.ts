@@ -13,6 +13,18 @@ export interface TeslaLinkStatus {
   updatedAt?: string;
 }
 
+export interface TeslaVehicleSummary {
+  id: string;
+  vehicleId: number;
+  vin: string;
+  displayName: string | null;
+  state: string;
+}
+
+export type AccessTokenResult =
+  | { ok: true; accessToken: string; refreshed: boolean }
+  | { ok: false; reason: "not_linked" | "refresh_failed" };
+
 // ── Private types (Tesla API responses) ───────────────────
 
 interface TeslaVehicleListItem {
@@ -35,22 +47,6 @@ interface TeslaRefreshTokenResponse {
 }
 
 // ── Internal helpers ──────────────────────────────────────
-
-/**
- * Call the Tesla Fleet API to list the user's vehicles.
- * Uses the per-user access token (not the fleet bearer token).
- * Returns the vehicle count.
- */
-async function fetchUserVehicleCount(accessToken: string): Promise<number> {
-  const res = await axios.get<TeslaVehicleListResponse>(
-    `${config.teslaBaseUrl}/api/1/vehicles`,
-    {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      timeout: config.httpTimeoutMs,
-    },
-  );
-  return res.data?.count ?? res.data?.response?.length ?? 0;
-}
 
 /**
  * Refresh an expired Tesla access token using the refresh_token grant.
@@ -102,7 +98,80 @@ async function refreshAccessToken(
   }
 }
 
-// ── Main export ───────────────────────────────────────────
+// ── Exported helpers ──────────────────────────────────────
+
+/**
+ * Load the per-user Tesla access token, refreshing if expired.
+ * Returns a discriminated result so callers can log exactly what happened.
+ */
+export async function getUserAccessToken(
+  userId: string,
+): Promise<AccessTokenResult> {
+  const account = await prisma.teslaAccount.findUnique({
+    where: { userId },
+    select: { accessToken: true, refreshToken: true, expiresAt: true },
+  });
+
+  if (!account) {
+    return { ok: false, reason: "not_linked" };
+  }
+
+  // Token still valid
+  if (account.expiresAt.getTime() >= Date.now()) {
+    return { ok: true, accessToken: account.accessToken, refreshed: false };
+  }
+
+  // Token expired — try refresh
+  const newToken = await refreshAccessToken(userId, account.refreshToken);
+  if (newToken) {
+    return { ok: true, accessToken: newToken, refreshed: true };
+  }
+
+  return { ok: false, reason: "refresh_failed" };
+}
+
+/**
+ * Fetch the user's full vehicle list from the Tesla Fleet API.
+ * Uses the per-user access token (not the fleet bearer token).
+ */
+export async function fetchUserVehicles(
+  accessToken: string,
+): Promise<TeslaVehicleSummary[]> {
+  const res = await axios.get<TeslaVehicleListResponse>(
+    `${config.teslaBaseUrl}/api/1/vehicles`,
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: config.httpTimeoutMs,
+    },
+  );
+
+  const raw = res.data?.response;
+  if (!Array.isArray(raw)) return [];
+
+  return raw.map((v) => ({
+    id: String(v.id),
+    vehicleId: v.vehicle_id,
+    vin: v.vin ?? "",
+    displayName: v.display_name ?? null,
+    state: v.state ?? "unknown",
+  }));
+}
+
+/**
+ * Call Tesla Fleet API to get vehicle count only (lighter than full list).
+ */
+async function fetchUserVehicleCount(accessToken: string): Promise<number> {
+  const res = await axios.get<TeslaVehicleListResponse>(
+    `${config.teslaBaseUrl}/api/1/vehicles`,
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: config.httpTimeoutMs,
+    },
+  );
+  return res.data?.count ?? res.data?.response?.length ?? 0;
+}
+
+// ── Status endpoint helper ────────────────────────────────
 
 /**
  * Get the Tesla link status for a user, including live vehicle count.
