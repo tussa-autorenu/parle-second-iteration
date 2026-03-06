@@ -1,15 +1,30 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { AxiosError } from "axios";
 import { getUserAccessToken, fetchUserVehicles } from "../services/teslaAccountService.js";
 import { getVehicleOrThrow } from "../services/vehicleService.js";
 import { createTeslaClient } from "../clients/teslaClient.js";
 import { TeslaApi } from "../tesla/teslaApi.js";
 import { getCachedTelemetry, refreshTelemetry } from "../services/telemetryService.js";
-import { ok } from "../utils/http.js";
+import { ApiError } from "../utils/errors.js";
+import { ok, fail } from "../utils/http.js";
 
 // Legacy TeslaApi using global bearer token — only used by /vehicles/:id
 // TODO: migrate /vehicles/:id to per-user token flow too
 const legacyTeslaApi = new TeslaApi(createTeslaClient());
+
+const SENSITIVE_KEYS = new Set(["access_token", "refresh_token", "token", "authorization"]);
+
+function redactBody(data: unknown): unknown {
+  if (data == null) return null;
+  if (typeof data === "string") return data.slice(0, 200);
+  if (typeof data !== "object") return data;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(data as Record<string, unknown>)) {
+    out[k] = SENSITIVE_KEYS.has(k.toLowerCase()) ? "[REDACTED]" : v;
+  }
+  return out;
+}
 
 export async function vehiclesRoutes(app: FastifyInstance) {
   // ── GET /vehicles ───────────────────────────────────────
@@ -61,13 +76,36 @@ export async function vehiclesRoutes(app: FastifyInstance) {
 
       return ok(reply, results);
     } catch (err: unknown) {
-      // ── Diagnostic log: Tesla API error (no token leak) ──
-      const status = (err as { response?: { status?: number } })?.response?.status;
+      const status = err instanceof AxiosError ? err.response?.status : undefined;
+      const body = err instanceof AxiosError ? redactBody(err.response?.data) : undefined;
+
       req.log.warn(
-        { teslaStatus: status ?? null },
+        { teslaStatus: status ?? null, teslaBody: body ?? null },
         "GET /vehicles: Tesla Fleet API call failed",
       );
-      return ok(reply, []);
+
+      if (status === 401 || status === 403) {
+        return fail(reply, new ApiError(401, "tesla_auth_error",
+          "Tesla rejected the access token. Please re-link your Tesla account."));
+      }
+      if (status === 412) {
+        return fail(reply, new ApiError(409, "tesla_pairing_required",
+          "Your vehicle must be paired with this application. "
+          + "Open your vehicle's touchscreen, go to Controls > Locks > "
+          + "Allow Mobile Access, then tap \"Set Up\" for third-party apps "
+          + "and approve this application."));
+      }
+      if (status === 429) {
+        return fail(reply, new ApiError(429, "tesla_rate_limited",
+          "Tesla Fleet API rate limit reached. Please try again in a few minutes."));
+      }
+      if (status && status >= 500) {
+        return fail(reply, new ApiError(502, "tesla_upstream_error",
+          "Tesla Fleet API is temporarily unavailable. Please try again later."));
+      }
+
+      return fail(reply, new ApiError(502, "tesla_upstream_error",
+        "Failed to fetch vehicles from Tesla."));
     }
   });
 

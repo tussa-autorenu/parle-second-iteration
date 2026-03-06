@@ -7,6 +7,10 @@ export type ErrorReason =
   | "not_found"
   | "bad_request"
   | "tesla_error"
+  | "tesla_auth_error"
+  | "tesla_pairing_required"
+  | "tesla_rate_limited"
+  | "tesla_upstream_error"
   | "unknown";
 
 export class ApiError extends Error {

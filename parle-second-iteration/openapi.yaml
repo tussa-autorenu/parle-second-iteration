@@ -29,6 +29,26 @@ paths:
       summary: List vehicles with cached telemetry
       responses:
         "200": { description: OK }
+        "401":
+          description: Tesla auth error — token rejected (code tesla_auth_error)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FailResponse" }
+        "409":
+          description: Vehicle pairing required (code tesla_pairing_required)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FailResponse" }
+        "429":
+          description: Tesla rate limited (code tesla_rate_limited)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FailResponse" }
+        "502":
+          description: Tesla upstream error (code tesla_upstream_error)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FailResponse" }
   /vehicles/{id}:
     get:
       summary: Get vehicle + state (refreshes if needed)
