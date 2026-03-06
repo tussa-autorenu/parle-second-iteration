@@ -4,3 +4,4 @@ dist
 
 private-key.pem
 public-key.pem
+.DS_Store
