@@ -145,6 +145,15 @@ curl.exe -X POST -H "x-parle-api-key: dev_key_change_me" http://localhost:8080/v
 curl.exe -H "x-parle-api-key: dev_key_change_me" "http://localhost:8080/logs/commands?limit=20"
 ```
 
+#### 7) Disconnect Tesla account
+```bash
+curl -X POST \
+  -H "x-parle-api-key: dev_key_change_me" \
+  -H "x-triggered-by: <supabase_user_id>" \
+  http://localhost:8080/auth/tesla/disconnect
+# Expected: {"ok":true,"data":{"disconnected":true}}
+```
+
 ---
 
 ## 6) How Char3 should call this service

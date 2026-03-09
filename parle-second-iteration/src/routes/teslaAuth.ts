@@ -192,4 +192,27 @@ export async function teslaAuthRoutes(app: FastifyInstance) {
       return ok(reply, status);
     },
   );
+
+  // ── Disconnect: remove stored Tesla tokens for a user ──
+  // Protected route — requires x-parle-api-key + x-triggered-by:<userId>
+  app.post(
+    "/auth/tesla/disconnect",
+    { schema: { tags: ["tesla-auth"] } },
+    async (req, reply) => {
+      const userId = req.triggeredBy?.trim();
+
+      if (!userId || userId === "system") {
+        throw new ApiError(
+          400,
+          "bad_request",
+          "x-triggered-by header must contain the user ID",
+        );
+      }
+
+      await prisma.teslaAccount.deleteMany({ where: { userId } });
+      await prisma.teslaOAuthSession.deleteMany({ where: { userId } });
+
+      return ok(reply, { disconnected: true });
+    },
+  );
 }

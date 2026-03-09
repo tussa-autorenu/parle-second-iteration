@@ -114,6 +114,47 @@ paths:
           schema: { type: string }
       responses:
         "200": { description: OK }
+  /auth/tesla/disconnect:
+    post:
+      tags: [auth]
+      summary: Disconnect Tesla account for the authenticated user
+      description: >
+        Removes stored Tesla OAuth tokens and any pending OAuth sessions
+        for the user identified by the x-triggered-by header.
+      parameters:
+        - in: header
+          name: x-parle-api-key
+          required: true
+          schema: { type: string }
+          description: Service-to-service shared secret
+        - in: header
+          name: x-triggered-by
+          required: true
+          schema: { type: string }
+          description: Supabase user ID of the user to disconnect
+      responses:
+        "200":
+          description: Tesla account disconnected
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  data:
+                    type: object
+                    properties:
+                      disconnected: { type: boolean, example: true }
+        "400":
+          description: Missing or invalid x-triggered-by header
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FailResponse" }
+        "401":
+          description: Missing or invalid x-parle-api-key
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FailResponse" }
   /logs/commands:
     get:
       summary: List command logs
