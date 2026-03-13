@@ -11,6 +11,10 @@ export interface TeslaVehicleState {
   lastLat: number | null;
   lastLng: number | null;
   lastSeenAt: string;
+  chargingState: string | null;
+  rangeKm: number | null;
+  insideTemp: number | null;
+  outsideTemp: number | null;
 }
 
 type JsonObject = Record<string, unknown>;
@@ -114,24 +118,43 @@ function safeDetails(u: TeslaUpstreamError, extras?: Record<string, unknown>): R
   return out;
 }
 
+/**
+ * Map our internal command names to the Tesla Fleet API command names.
+ * Wake is handled separately (different URL pattern).
+ */
+const TESLA_CMD: Record<string, string> = {
+  "unlock":         "door_unlock",
+  "lock":           "door_lock",
+  "enable-drive":   "remote_start_drive",
+  "honk":           "honk_horn",
+  "flash":          "flash_lights",
+  "precondition-on":"auto_conditioning_start",
+  "send-destination":"share",
+};
+
 export class TeslaApi {
   constructor(private client: AxiosInstance) {}
 
   async getState(teslaVehicleId: string): Promise<TeslaVehicleState> {
+    const path = `/api/1/vehicles/${encodeURIComponent(teslaVehicleId)}/vehicle_data`;
     try {
-      const r = await this.client.get(`/fleet/vehicles/${encodeURIComponent(teslaVehicleId)}/status`);
-      const data = (r.data ?? {}) as JsonObject;
+      const r = await this.client.get(path);
+      const raw = (r.data ?? {}) as JsonObject;
 
-      const vehicleState = (data["vehicle_state"] ?? data["vehicleState"] ?? data) as JsonObject;
+      // vehicle_data wraps everything under "response"
+      const response = (raw["response"] ?? raw) as JsonObject;
+      const vehicleState = (response["vehicle_state"] ?? response["vehicleState"] ?? {}) as JsonObject;
+      const chargeState = (response["charge_state"] ?? response["chargeState"] ?? {}) as JsonObject;
+      const driveState = (response["drive_state"] ?? response["driveState"] ?? {}) as JsonObject;
+      const climateState = (response["climate_state"] ?? response["climateState"] ?? {}) as JsonObject;
 
-      const battery = vehicleState["battery_level"] ?? vehicleState["batteryPercent"] ?? null;
+      const battery = chargeState["battery_level"] ?? vehicleState["batteryPercent"] ?? null;
       const batteryPercent = typeof battery === "number" ? battery : null;
 
       const rawOnline =
-        vehicleState["state"] ??
+        response["state"] ??
         vehicleState["onlineStatus"] ??
         vehicleState["online_status"] ??
-        vehicleState["vehicle_state"] ??
         null;
 
       const rawLock =
@@ -140,8 +163,13 @@ export class TeslaApi {
         vehicleState["lock_status"] ??
         null;
 
-      const lat = vehicleState["latitude"] ?? vehicleState["lastLat"] ?? null;
-      const lng = vehicleState["longitude"] ?? vehicleState["lastLng"] ?? null;
+      const lat = driveState["latitude"] ?? vehicleState["lastLat"] ?? null;
+      const lng = driveState["longitude"] ?? vehicleState["lastLng"] ?? null;
+
+      const rawChargingState = chargeState["charging_state"] ?? chargeState["chargingState"] ?? null;
+      const rawRangeMiles = chargeState["battery_range"] ?? chargeState["ideal_battery_range"] ?? null;
+      const insideTemp = climateState["inside_temp"] ?? climateState["insideTemp"] ?? null;
+      const outsideTemp = climateState["outside_temp"] ?? climateState["outsideTemp"] ?? null;
 
       return {
         batteryPercent,
@@ -150,13 +178,19 @@ export class TeslaApi {
         lastLat: typeof lat === "number" ? lat : null,
         lastLng: typeof lng === "number" ? lng : null,
         lastSeenAt: new Date().toISOString(),
+        chargingState: typeof rawChargingState === "string" ? rawChargingState : null,
+        rangeKm: typeof rawRangeMiles === "number" ? Math.round(rawRangeMiles * 1.60934) : null,
+        insideTemp: typeof insideTemp === "number" ? insideTemp : null,
+        outsideTemp: typeof outsideTemp === "number" ? outsideTemp : null,
       };
     } catch (e: unknown) {
       const u = extractTeslaError(e);
       if (u.teslaStatus === 401 || u.teslaStatus === 403) {
-        throw new ApiError(502, "auth_error", `Tesla auth failed for getState${describeUpstream(u)}`, safeDetails(u));
+        throw new ApiError(502, "auth_error",
+          `Tesla auth failed for getState${describeUpstream(u)}`, safeDetails(u, { path }));
       }
-      throw new ApiError(502, "tesla_error", `Tesla status fetch failed${describeUpstream(u)}`, safeDetails(u));
+      throw new ApiError(502, "tesla_error",
+        `Tesla status fetch failed${describeUpstream(u)}`, safeDetails(u, { path }));
     }
   }
 
@@ -170,20 +204,26 @@ export class TeslaApi {
   async sendDestination(id: string, body: unknown) { return this.command(id, "send-destination", body); }
 
   private async command(id: string, cmd: string, body?: unknown) {
+    // Wake uses a dedicated endpoint; everything else goes through /command/
+    const path = cmd === "wake"
+      ? `/api/1/vehicles/${encodeURIComponent(id)}/wake_up`
+      : `/api/1/vehicles/${encodeURIComponent(id)}/command/${TESLA_CMD[cmd] ?? cmd}`;
+
     try {
-      const r = await this.client.post(
-        `/fleet/vehicles/${encodeURIComponent(id)}/commands/${cmd}`,
-        body ?? {},
-      );
+      const r = await this.client.post(path, body ?? {});
       return { teslaStatus: r.status, data: (r.data ?? {}) as JsonObject };
     } catch (e: unknown) {
       const u = extractTeslaError(e);
       const detail = describeUpstream(u);
-      const extras = { command: cmd, vehicleId: id };
+      const extras = { command: cmd, vehicleId: id, path, method: "POST" };
 
       if (u.teslaStatus === 401 || u.teslaStatus === 403) {
         throw new ApiError(502, "auth_error",
           `Tesla rejected auth for ${cmd}${detail}`, safeDetails(u, extras));
+      }
+      if (u.teslaStatus === 404) {
+        throw new ApiError(502, "command_rejected",
+          `Tesla returned 404 for ${cmd} — vehicle or endpoint not found${detail}`, safeDetails(u, extras));
       }
       if (u.teslaStatus === 412) {
         throw new ApiError(502, "tesla_pairing_required",

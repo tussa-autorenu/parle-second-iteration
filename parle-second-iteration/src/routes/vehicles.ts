@@ -2,16 +2,12 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { AxiosError } from "axios";
 import { getUserAccessToken, fetchUserVehicles } from "../services/teslaAccountService.js";
-import { getVehicleOrThrow, syncVehiclesToDb } from "../services/vehicleService.js";
+import { getVehicleOrThrow, resolveVehicle, syncVehiclesToDb } from "../services/vehicleService.js";
 import { createTeslaClient } from "../clients/teslaClient.js";
 import { TeslaApi } from "../tesla/teslaApi.js";
 import { getCachedTelemetry, refreshTelemetry } from "../services/telemetryService.js";
 import { ApiError } from "../utils/errors.js";
 import { ok, fail } from "../utils/http.js";
-
-// Legacy TeslaApi using global bearer token — only used by /vehicles/:id
-// TODO: migrate /vehicles/:id to per-user token flow too
-const legacyTeslaApi = new TeslaApi(createTeslaClient());
 
 const SENSITIVE_KEYS = new Set(["access_token", "refresh_token", "token", "authorization"]);
 
@@ -108,13 +104,113 @@ export async function vehiclesRoutes(app: FastifyInstance) {
 
   // ── GET /vehicles/:id ──────────────────────────────────
   // Single vehicle detail by local DB ID.
-  // NOTE: still uses legacy global Tesla bearer token for telemetry.
-  // TODO: migrate to per-user token flow.
   app.get("/vehicles/:id", { schema: { tags: ["vehicles"] } }, async (req, reply) => {
+    const userId = req.triggeredBy?.trim() ?? "system";
     const id = z.object({ id: z.string() }).parse(req.params).id;
     const v = await getVehicleOrThrow(id);
+
+    const tokenResult = await getUserAccessToken(userId);
+    if (!tokenResult.ok) {
+      return ok(reply, { id: v.id, teslaVehicleId: v.teslaVehicleId, vin: v.vin, friendlyName: v.friendlyName, state: null });
+    }
+
+    const tesla = new TeslaApi(createTeslaClient(tokenResult.accessToken));
     const cached = await getCachedTelemetry(v.id);
-    const state = cached ?? await refreshTelemetry(v.id, v.teslaVehicleId, legacyTeslaApi);
+    const state = cached ?? await refreshTelemetry(v.id, v.teslaVehicleId, tesla);
     return ok(reply, { id: v.id, teslaVehicleId: v.teslaVehicleId, vin: v.vin, friendlyName: v.friendlyName, state });
+  });
+
+  // ── GET /vehicles/:id/status ────────────────────────────
+  // Live vehicle status from Tesla Fleet API using the per-user token.
+  app.get("/vehicles/:id/status", { schema: { tags: ["vehicles"] } }, async (req, reply) => {
+    const userId = req.triggeredBy?.trim() ?? "system";
+    const { id } = z.object({ id: z.string().min(1) }).parse(req.params);
+
+    req.log.info({ triggeredBy: userId, routeParamId: id }, "GET /vehicles/:id/status: request");
+
+    // ── Per-user Tesla token ──
+    const tokenResult = await getUserAccessToken(userId);
+
+    req.log.info(
+      {
+        triggeredBy: userId,
+        hasAccount: tokenResult.ok,
+        reason: tokenResult.ok ? undefined : tokenResult.reason,
+        tokenRefreshed: tokenResult.ok ? tokenResult.refreshed : false,
+      },
+      "GET /vehicles/:id/status: Tesla account lookup",
+    );
+
+    if (!tokenResult.ok) {
+      return fail(
+        reply,
+        new ApiError(
+          401,
+          "tesla_auth_error",
+          tokenResult.reason === "not_linked"
+            ? "No Tesla account linked. Please link your Tesla account first."
+            : "Tesla token expired and refresh failed. Please re-link your Tesla account.",
+        ),
+      );
+    }
+
+    // ── Vehicle resolution (DB pk → DB teslaVehicleId → raw id fallback) ──
+    const vehicle = await resolveVehicle(id);
+    const teslaVehicleId = vehicle?.teslaVehicleId ?? id;
+
+    req.log.info(
+      {
+        routeParamId: id,
+        resolvedVia: vehicle ? (vehicle.id === id ? "db_pk" : "db_tesla_id") : "tesla_id_fallback",
+        teslaVehicleId,
+      },
+      "GET /vehicles/:id/status: vehicle resolution",
+    );
+
+    // ── Fetch live status from Tesla ──
+    const tesla = new TeslaApi(createTeslaClient(tokenResult.accessToken));
+
+    try {
+      const state = await tesla.getState(teslaVehicleId);
+
+      req.log.info(
+        {
+          teslaVehicleId,
+          onlineStatus: state.onlineStatus,
+          batteryPercent: state.batteryPercent,
+          chargingState: state.chargingState,
+        },
+        "GET /vehicles/:id/status: Tesla upstream result",
+      );
+
+      return ok(reply, {
+        state: state.onlineStatus.toLowerCase(),
+        batteryLevel: state.batteryPercent,
+        isLocked: state.lockStatus === "LOCKED" ? true
+                : state.lockStatus === "UNLOCKED" ? false
+                : null,
+        chargingState: state.chargingState,
+        rangeKm: state.rangeKm,
+        insideTemp: state.insideTemp,
+        outsideTemp: state.outsideTemp,
+        lastSeenAt: state.lastSeenAt,
+        lastLat: state.lastLat,
+        lastLng: state.lastLng,
+      });
+    } catch (err: unknown) {
+      const apiErr = err instanceof ApiError ? err : new ApiError(502, "tesla_error", "Failed to fetch vehicle status");
+
+      req.log.warn(
+        {
+          teslaVehicleId,
+          errorReason: apiErr.reason,
+          errorMessage: apiErr.message,
+          teslaStatus: apiErr.details?.["teslaStatus"] ?? null,
+        },
+        "GET /vehicles/:id/status: Tesla upstream failed",
+      );
+
+      return fail(reply, apiErr);
+    }
   });
 }
