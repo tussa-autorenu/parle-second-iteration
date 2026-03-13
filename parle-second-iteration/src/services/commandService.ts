@@ -27,7 +27,7 @@ function getTeslaStatus(err: ApiError | null): number | null {
 
 
 export async function runCommand(params: {
-  vehicleId: string;
+  vehicleId: string | undefined;
   teslaVehicleId: string;
   command: CommandName;
   requestId: string;
@@ -36,22 +36,33 @@ export async function runCommand(params: {
   body?: unknown;
 }) {
   const commandEnum = mapToEnum(params.command);
+  const hasDbRow = params.vehicleId !== undefined;
 
-  const existing = await prisma.commandLog.findUnique({
-    where: { vehicleId_requestId_command: { vehicleId: params.vehicleId, requestId: params.requestId, command: commandEnum } }
-  }).catch(() => null);
+  // Idempotency check — only possible when we have a local Vehicle row (FK)
+  if (hasDbRow) {
+    const existing = await prisma.commandLog.findUnique({
+      where: { vehicleId_requestId_command: { vehicleId: params.vehicleId!, requestId: params.requestId, command: commandEnum } }
+    }).catch(() => null);
 
-  if (existing) {
-    return {
-      replay: true,
-      result: existing.result,
-      errorReason: existing.errorReason,
-      teslaStatus: existing.teslaStatus
-    };
+    if (existing) {
+      return {
+        replay: true,
+        result: existing.result,
+        errorReason: existing.errorReason,
+        teslaStatus: existing.teslaStatus
+      };
+    }
   }
 
+  // Wake-before-command: full telemetry-polling path when DB row exists,
+  // lightweight fire-and-wait when it doesn't.
   if (params.command !== "wake") {
-    await ensureAwake(params.vehicleId, params.teslaVehicleId, params.tesla);
+    if (hasDbRow) {
+      await ensureAwake(params.vehicleId!, params.teslaVehicleId, params.tesla);
+    } else {
+      await params.tesla.wake(params.teslaVehicleId);
+      await sleep(config.wakePollIntervalMs);
+    }
   }
 
   let attempt = 0;
@@ -60,16 +71,18 @@ export async function runCommand(params: {
   while (attempt <= config.commandRetryCount) {
     try {
       const res = await execute(params);
-      await prisma.commandLog.create({
-        data: {
-          vehicleId: params.vehicleId,
-          requestId: params.requestId,
-          command: commandEnum,
-          triggeredBy: params.triggeredBy,
-          result: "SUCCESS",
-          teslaStatus: res.teslaStatus
-        }
-      });
+      if (hasDbRow) {
+        await prisma.commandLog.create({
+          data: {
+            vehicleId: params.vehicleId!,
+            requestId: params.requestId,
+            command: commandEnum,
+            triggeredBy: params.triggeredBy,
+            result: "SUCCESS",
+            teslaStatus: res.teslaStatus
+          }
+        });
+      }
       return { replay: false, result: "SUCCESS", teslaStatus: res.teslaStatus };
     } catch (e: unknown) {
       const err = e instanceof ApiError ? e : new ApiError(502, "unknown", "Command failed");
@@ -82,18 +95,20 @@ export async function runCommand(params: {
     }
   }
 
-  await prisma.commandLog.create({
-    data: {
-      vehicleId: params.vehicleId,
-      requestId: params.requestId,
-      command: commandEnum,
-      triggeredBy: params.triggeredBy,
-      result: "FAIL",
-      errorReason: lastErr?.reason ?? "unknown",
-      errorMessage: lastErr?.message ?? "Command failed",
-      teslaStatus: getTeslaStatus(lastErr)
-    }
-  });
+  if (hasDbRow) {
+    await prisma.commandLog.create({
+      data: {
+        vehicleId: params.vehicleId!,
+        requestId: params.requestId,
+        command: commandEnum,
+        triggeredBy: params.triggeredBy,
+        result: "FAIL",
+        errorReason: lastErr?.reason ?? "unknown",
+        errorMessage: lastErr?.message ?? "Command failed",
+        teslaStatus: getTeslaStatus(lastErr)
+      }
+    });
+  }
 
   throw lastErr ?? new ApiError(502, "unknown", "Command failed");
 }

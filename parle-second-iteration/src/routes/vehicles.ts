@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { AxiosError } from "axios";
 import { getUserAccessToken, fetchUserVehicles } from "../services/teslaAccountService.js";
-import { getVehicleOrThrow } from "../services/vehicleService.js";
+import { getVehicleOrThrow, syncVehiclesToDb } from "../services/vehicleService.js";
 import { createTeslaClient } from "../clients/teslaClient.js";
 import { TeslaApi } from "../tesla/teslaApi.js";
 import { getCachedTelemetry, refreshTelemetry } from "../services/telemetryService.js";
@@ -33,13 +33,10 @@ export async function vehiclesRoutes(app: FastifyInstance) {
   app.get("/vehicles", { schema: { tags: ["vehicles"] } }, async (req, reply) => {
     const userId = req.triggeredBy?.trim() ?? "system";
 
-    // ── Diagnostic log: user identity ──
     req.log.info({ triggeredBy: userId }, "GET /vehicles: user identity");
 
-    // Load per-user Tesla access token (with auto-refresh if expired)
     const tokenResult = await getUserAccessToken(userId);
 
-    // ── Diagnostic log: account lookup result ──
     req.log.info(
       {
         hasAccount: tokenResult.ok,
@@ -50,22 +47,22 @@ export async function vehiclesRoutes(app: FastifyInstance) {
     );
 
     if (!tokenResult.ok) {
-      // User has no linked Tesla account (or token refresh failed)
-      // Return empty list — the frontend checks /auth/tesla/status for details
       return ok(reply, []);
     }
 
-    // Fetch vehicle list from Tesla Fleet API using per-user token
     try {
       const vehicles = await fetchUserVehicles(tokenResult.accessToken);
 
-      // ── Diagnostic log: Tesla API result ──
       req.log.info(
         { vehicleCount: vehicles.length },
         "GET /vehicles: Tesla API vehicle list",
       );
 
-      // Normalize to the shape the frontend expects
+      // Sync Tesla vehicles into local DB so commands have full
+      // DB support (idempotency, CommandLog, telemetry snapshots).
+      const sync = await syncVehiclesToDb(vehicles);
+      req.log.info(sync, "GET /vehicles: DB sync result");
+
       const results = vehicles.map((v) => ({
         id: v.id,
         teslaVehicleId: v.id,

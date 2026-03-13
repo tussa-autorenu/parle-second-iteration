@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
-import { getVehicleOrThrow } from "../services/vehicleService.js";
+import { resolveVehicle } from "../services/vehicleService.js";
 import { createTeslaClient } from "../clients/teslaClient.js";
 import { TeslaApi } from "../tesla/teslaApi.js";
 import { runCommand, type CommandName } from "../services/commandService.js";
@@ -23,35 +23,35 @@ async function handleCommand(
   const { id } = ParamsSchema.parse(req.params);
   const body = BodySchema.parse(req.body ?? {});
 
-  req.log.info(
-    { routeParamId: id, command },
-    "handleCommand: received route param",
-  );
+  const vehicle = await resolveVehicle(id);
 
-  const v = await getVehicleOrThrow(id);
+  const vehicleId = vehicle?.id ?? undefined;
+  const teslaVehicleId = vehicle?.teslaVehicleId ?? id;
 
   req.log.info(
     {
-      resolvedDbId: v.id,
-      teslaVehicleId: v.teslaVehicleId,
-      matchedVia: v.id === id ? "id" : "teslaVehicleId",
+      routeParamId: id,
+      command,
+      resolvedVia: vehicle ? (vehicle.id === id ? "db_pk" : "db_tesla_id") : "tesla_id_fallback",
+      vehicleId: vehicleId ?? null,
+      teslaVehicleId,
     },
-    "handleCommand: resolved vehicle",
+    "handleCommand: vehicle resolution",
   );
 
   const requestId = body.requestId ?? req.requestId ?? randomUUID();
   const triggeredBy = req.triggeredBy ?? "system";
 
   const res = await runCommand({
-    vehicleId: v.id,
-    teslaVehicleId: v.teslaVehicleId,
+    vehicleId,
+    teslaVehicleId,
     command,
     requestId,
     triggeredBy,
     tesla: teslaApi,
   });
 
-  return ok(reply, { ...res, vehicleId: v.id, command, requestId });
+  return ok(reply, { ...res, vehicleId: vehicleId ?? teslaVehicleId, command, requestId });
 }
 
 export async function commandsRoutes(app: FastifyInstance) {
