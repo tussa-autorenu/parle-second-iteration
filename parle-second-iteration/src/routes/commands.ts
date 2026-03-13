@@ -23,7 +23,22 @@ async function handleCommand(
   const { id } = ParamsSchema.parse(req.params);
   const body = BodySchema.parse(req.body ?? {});
 
+  req.log.info(
+    { routeParamId: id, command },
+    "handleCommand: received route param",
+  );
+
   const v = await getVehicleOrThrow(id);
+
+  req.log.info(
+    {
+      resolvedDbId: v.id,
+      teslaVehicleId: v.teslaVehicleId,
+      matchedVia: v.id === id ? "id" : "teslaVehicleId",
+    },
+    "handleCommand: resolved vehicle",
+  );
+
   const requestId = body.requestId ?? req.requestId ?? randomUUID();
   const triggeredBy = req.triggeredBy ?? "system";
 
@@ -33,7 +48,7 @@ async function handleCommand(
     command,
     requestId,
     triggeredBy,
-    tesla: teslaApi
+    tesla: teslaApi,
   });
 
   return ok(reply, { ...res, vehicleId: v.id, command, requestId });
