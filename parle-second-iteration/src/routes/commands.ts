@@ -4,10 +4,10 @@ import { randomUUID } from "node:crypto";
 import { resolveVehicle } from "../services/vehicleService.js";
 import { createTeslaClient } from "../clients/teslaClient.js";
 import { TeslaApi } from "../tesla/teslaApi.js";
+import { getUserAccessToken } from "../services/teslaAccountService.js";
 import { runCommand, type CommandName } from "../services/commandService.js";
-import { ok } from "../utils/http.js";
-
-const teslaApi = new TeslaApi(createTeslaClient());
+import { ApiError } from "../utils/errors.js";
+import { ok, fail } from "../utils/http.js";
 
 const ParamsSchema = z.object({ id: z.string().min(1) });
 const BodySchema = z.object({ requestId: z.string().min(8).optional() });
@@ -18,11 +18,46 @@ type CmdBody = { requestId?: string };
 async function handleCommand(
   req: FastifyRequest<{ Params: CmdParams; Body: CmdBody }>,
   reply: FastifyReply,
-  command: CommandName
+  command: CommandName,
 ) {
   const { id } = ParamsSchema.parse(req.params);
   const body = BodySchema.parse(req.body ?? {});
 
+  const triggeredBy = req.triggeredBy?.trim() ?? "system";
+  const requestId = body.requestId ?? req.requestId ?? randomUUID();
+
+  req.log.info({ triggeredBy, command }, "handleCommand: user identity");
+
+  // ── Per-user Tesla token (same flow as GET /vehicles) ──
+  const tokenResult = await getUserAccessToken(triggeredBy);
+
+  req.log.info(
+    {
+      triggeredBy,
+      hasAccount: tokenResult.ok,
+      reason: tokenResult.ok ? undefined : tokenResult.reason,
+      tokenRefreshed: tokenResult.ok ? tokenResult.refreshed : false,
+      authFlow: "per_user",
+    },
+    "handleCommand: Tesla account lookup",
+  );
+
+  if (!tokenResult.ok) {
+    return fail(
+      reply,
+      new ApiError(
+        401,
+        "tesla_auth_error",
+        tokenResult.reason === "not_linked"
+          ? "No Tesla account linked. Please link your Tesla account first."
+          : "Tesla token expired and refresh failed. Please re-link your Tesla account.",
+      ),
+    );
+  }
+
+  const tesla = new TeslaApi(createTeslaClient(tokenResult.accessToken));
+
+  // ── Vehicle resolution ──
   const vehicle = await resolveVehicle(id);
 
   const vehicleId = vehicle?.id ?? undefined;
@@ -39,16 +74,13 @@ async function handleCommand(
     "handleCommand: vehicle resolution",
   );
 
-  const requestId = body.requestId ?? req.requestId ?? randomUUID();
-  const triggeredBy = req.triggeredBy ?? "system";
-
   const res = await runCommand({
     vehicleId,
     teslaVehicleId,
     command,
     requestId,
     triggeredBy,
-    tesla: teslaApi,
+    tesla,
   });
 
   return ok(reply, { ...res, vehicleId: vehicleId ?? teslaVehicleId, command, requestId });
