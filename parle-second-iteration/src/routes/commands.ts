@@ -74,16 +74,36 @@ async function handleCommand(
     "handleCommand: vehicle resolution",
   );
 
-  const res = await runCommand({
-    vehicleId,
-    teslaVehicleId,
-    command,
-    requestId,
-    triggeredBy,
-    tesla,
-  });
+  try {
+    const res = await runCommand({
+      vehicleId,
+      teslaVehicleId,
+      command,
+      requestId,
+      triggeredBy,
+      tesla,
+    });
 
-  return ok(reply, { ...res, vehicleId: vehicleId ?? teslaVehicleId, command, requestId });
+    return ok(reply, { ...res, vehicleId: vehicleId ?? teslaVehicleId, command, requestId });
+  } catch (e: unknown) {
+    const err = e instanceof ApiError ? e : new ApiError(502, "unknown", "Command failed");
+
+    req.log.warn(
+      {
+        triggeredBy,
+        command,
+        teslaVehicleId,
+        errorReason: err.reason,
+        errorMessage: err.message,
+        teslaStatus: err.details?.["teslaStatus"] ?? null,
+        teslaError: err.details?.["teslaError"] ?? null,
+        origin: err.details?.["teslaStatus"] != null ? "tesla_upstream" : "pre_tesla",
+      },
+      "handleCommand: command failed",
+    );
+
+    return fail(reply, err);
+  }
 }
 
 export async function commandsRoutes(app: FastifyInstance) {

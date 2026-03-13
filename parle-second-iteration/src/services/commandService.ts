@@ -3,6 +3,9 @@ import { ApiError } from "../utils/errors.js";
 import type { TeslaApi } from "../tesla/teslaApi.js";
 import { config } from "../config/env.js";
 import { getCachedTelemetry, refreshTelemetry } from "./telemetryService.js";
+import pino from "pino";
+
+const log = pino({ name: "commandService" });
 
 export type CommandName =
   | "wake"
@@ -79,8 +82,8 @@ export async function runCommand(params: {
             command: commandEnum,
             triggeredBy: params.triggeredBy,
             result: "SUCCESS",
-            teslaStatus: res.teslaStatus
-          }
+            teslaStatus: res.teslaStatus,
+          },
         });
       }
       return { replay: false, result: "SUCCESS", teslaStatus: res.teslaStatus };
@@ -88,12 +91,45 @@ export async function runCommand(params: {
       const err = e instanceof ApiError ? e : new ApiError(502, "unknown", "Command failed");
       lastErr = err;
 
+      log.warn(
+        {
+          command: params.command,
+          teslaVehicleId: params.teslaVehicleId,
+          attempt: attempt + 1,
+          errorReason: err.reason,
+          errorMessage: err.message,
+          teslaStatus: err.details?.["teslaStatus"] ?? null,
+          teslaError: err.details?.["teslaError"] ?? null,
+          teslaMessage: err.details?.["teslaMessage"] ?? null,
+          origin: err.details?.["teslaStatus"] != null ? "tesla_upstream" : "pre_tesla",
+        },
+        "runCommand: attempt failed",
+      );
+
       const shouldRetry = attempt < config.commandRetryCount && isTransient(err.reason);
       attempt += 1;
       if (!shouldRetry) break;
       await sleep(250 * attempt);
     }
   }
+
+  const finalErr = lastErr ?? new ApiError(502, "unknown", "Command failed");
+
+  log.error(
+    {
+      command: params.command,
+      teslaVehicleId: params.teslaVehicleId,
+      triggeredBy: params.triggeredBy,
+      totalAttempts: attempt,
+      errorReason: finalErr.reason,
+      errorMessage: finalErr.message,
+      teslaStatus: finalErr.details?.["teslaStatus"] ?? null,
+      teslaError: finalErr.details?.["teslaError"] ?? null,
+      teslaMessage: finalErr.details?.["teslaMessage"] ?? null,
+      origin: finalErr.details?.["teslaStatus"] != null ? "tesla_upstream" : "pre_tesla",
+    },
+    "runCommand: command failed after all attempts",
+  );
 
   if (hasDbRow) {
     await prisma.commandLog.create({
@@ -103,14 +139,14 @@ export async function runCommand(params: {
         command: commandEnum,
         triggeredBy: params.triggeredBy,
         result: "FAIL",
-        errorReason: lastErr?.reason ?? "unknown",
-        errorMessage: lastErr?.message ?? "Command failed",
-        teslaStatus: getTeslaStatus(lastErr)
-      }
+        errorReason: finalErr.reason,
+        errorMessage: finalErr.message,
+        teslaStatus: getTeslaStatus(finalErr),
+      },
     });
   }
 
-  throw lastErr ?? new ApiError(502, "unknown", "Command failed");
+  throw finalErr;
 }
 
 async function ensureAwake(vehicleId: string, teslaVehicleId: string, tesla: TeslaApi) {
