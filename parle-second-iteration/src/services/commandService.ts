@@ -131,7 +131,10 @@ export async function runCommand(params: {
     "runCommand: command failed after all attempts",
   );
 
-  if (hasDbRow) {
+  // Don't persist a FAIL CommandLog for vcp_required — the caller will
+  // switch to proxy mode and retry with the same requestId. Writing a FAIL
+  // here would cause the idempotency check to short-circuit the retry.
+  if (hasDbRow && finalErr.reason !== "vcp_required") {
     await prisma.commandLog.create({
       data: {
         vehicleId: params.vehicleId!,

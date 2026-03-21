@@ -289,11 +289,18 @@ export class TeslaApi {
           `Tesla unreachable for ${cmd}${detail || ": network error or timeout"}`, safeDetails(u, extras));
       }
 
+      // VCP detection — Tesla returns this on 403 or 422 depending on firmware.
+      // Check before other 4xx handling so it's never misclassified.
+      if (
+        combined.includes("vehicle command protocol") ||
+        combined.includes("unsigned command") ||
+        combined.includes("unsigned_cmds_hardcoded")
+      ) {
+        throw new ApiError(502, "vcp_required",
+          `Vehicle requires Tesla Vehicle Command Protocol for ${cmd}${detail}`, safeDetails(u, extras));
+      }
+
       if (u.teslaStatus === 401 || u.teslaStatus === 403) {
-        if (combined.includes("vehicle command protocol") || combined.includes("unsigned command")) {
-          throw new ApiError(502, "vcp_required",
-            `Vehicle requires Tesla Vehicle Command Protocol for ${cmd}${detail}`, safeDetails(u, extras));
-        }
         if (combined.includes("mobile_access_disabled") || combined.includes("mobile access")) {
           throw new ApiError(502, "mobile_access_disabled",
             `Mobile access is disabled on this vehicle${detail}`, safeDetails(u, extras));
