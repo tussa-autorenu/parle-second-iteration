@@ -63,8 +63,9 @@ async function handleCommand(
   const vin = vehicle?.vin ?? null;
 
   // ── Build TeslaApi with both clients ──
-  const fleetClient = createTeslaClient(tokenResult.accessToken);
-  const proxyClient = createTeslaProxyClient(tokenResult.accessToken);
+  let currentAccessToken = tokenResult.accessToken;
+  const fleetClient = createTeslaClient(currentAccessToken);
+  const proxyClient = createTeslaProxyClient(currentAccessToken);
   const tesla = new TeslaApi(fleetClient, proxyClient, vin);
 
   // ── Per-vehicle command mode selection ──
@@ -98,6 +99,29 @@ async function handleCommand(
 
   const runParams = { vehicleId, teslaVehicleId, command, requestId, triggeredBy, tesla };
 
+  // Re-fetch the user's Tesla token and update both Axios clients when it
+  // has been refreshed since we last captured it. Returns true when the
+  // TeslaAccount was found (even if no refresh was needed), false on failure.
+  const refreshTokenForRetry = async (reason: string): Promise<boolean> => {
+    const fresh = await getUserAccessToken(triggeredBy);
+    if (!fresh.ok) {
+      req.log.warn(
+        { triggeredBy, reason: fresh.reason, retryReason: reason },
+        "handleCommand: token re-fetch failed before retry",
+      );
+      return false;
+    }
+    if (fresh.accessToken !== currentAccessToken) {
+      currentAccessToken = fresh.accessToken;
+      tesla.refreshAuthHeader(currentAccessToken);
+      req.log.info(
+        { triggeredBy, tokenRefreshed: true, commandMode: tesla.commandMode, retryReason: reason },
+        "handleCommand: refreshed auth header before retry",
+      );
+    }
+    return true;
+  };
+
   try {
     const res = await runCommand(runParams);
     return ok(reply, { ...res, vehicleId: vehicleId ?? teslaVehicleId, command, requestId });
@@ -130,6 +154,7 @@ async function handleCommand(
       }
 
       tesla.commandMode = "command_protocol_proxy";
+      await refreshTokenForRetry("vcp_proxy_switch");
 
       try {
         const retryRes = await runCommand(runParams);
@@ -161,6 +186,60 @@ async function handleCommand(
       }
     }
 
+    // ── Auth failure in proxy mode → refresh token + one retry ──
+    if (
+      err.reason === "auth_expired_or_invalid" &&
+      tesla.commandMode === "command_protocol_proxy"
+    ) {
+      req.log.info(
+        {
+          triggeredBy,
+          command,
+          teslaVehicleId,
+          vin,
+          commandMode: tesla.commandMode,
+          teslaStatus: err.details?.["teslaStatus"] ?? null,
+        },
+        "handleCommand: auth failed in proxy mode, attempting token refresh + retry",
+      );
+
+      const tokenOk = await refreshTokenForRetry("proxy_auth_401");
+      if (tokenOk) {
+        try {
+          const retryRes = await runCommand(runParams);
+          req.log.info(
+            { command, teslaVehicleId, vin },
+            "handleCommand: proxy command succeeded after auth refresh",
+          );
+          return ok(reply, {
+            ...retryRes,
+            vehicleId: vehicleId ?? teslaVehicleId,
+            command,
+            requestId,
+            authRefreshed: true,
+          });
+        } catch (retryE: unknown) {
+          const retryErr = retryE instanceof ApiError ? retryE : new ApiError(502, "unknown", "Command failed");
+          req.log.warn(
+            {
+              triggeredBy,
+              command,
+              teslaVehicleId,
+              vin,
+              via: tesla.commandMode,
+              errorReason: retryErr.reason,
+              errorMessage: retryErr.message,
+              teslaStatus: retryErr.details?.["teslaStatus"] ?? null,
+              authHeaderPresent: retryErr.details?.["authHeaderPresent"] ?? null,
+              retryAfterAuthRefresh: true,
+            },
+            "handleCommand: command still failed after auth refresh retry",
+          );
+          return fail(reply, retryErr);
+        }
+      }
+    }
+
     req.log.warn(
       {
         triggeredBy,
@@ -173,6 +252,7 @@ async function handleCommand(
         teslaStatus: err.details?.["teslaStatus"] ?? null,
         teslaError: err.details?.["teslaError"] ?? null,
         authHeaderPresent: err.details?.["authHeaderPresent"] ?? null,
+        commandMode: tesla.commandMode,
         origin: err.details?.["teslaStatus"] != null ? "tesla_upstream" : "pre_tesla",
       },
       "handleCommand: command failed",

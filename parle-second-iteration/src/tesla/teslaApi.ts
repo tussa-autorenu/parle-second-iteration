@@ -164,6 +164,24 @@ export class TeslaApi {
     this.commandMode = "direct_fleet_rest";
   }
 
+  /**
+   * Update the Authorization header on both fleet and proxy clients.
+   * Call after a token refresh so subsequent requests use the new credential.
+   */
+  refreshAuthHeader(newToken: string): void {
+    const value = `Bearer ${newToken}`;
+    for (const client of [this.fleetClient, this.proxyClient]) {
+      if (!client) continue;
+      client.defaults.headers["Authorization"] = value;
+      if (
+        client.defaults.headers["common"] &&
+        typeof client.defaults.headers["common"] === "object"
+      ) {
+        (client.defaults.headers["common"] as Record<string, string>)["Authorization"] = value;
+      }
+    }
+  }
+
   async getState(teslaVehicleId: string): Promise<TeslaVehicleState> {
     const path = `/api/1/vehicles/${encodeURIComponent(teslaVehicleId)}/vehicle_data`;
     try {

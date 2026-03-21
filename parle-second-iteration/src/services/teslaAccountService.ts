@@ -100,8 +100,12 @@ async function refreshAccessToken(
 
 // ── Exported helpers ──────────────────────────────────────
 
+const TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000;
+
 /**
- * Load the per-user Tesla access token, refreshing if expired.
+ * Load the per-user Tesla access token, refreshing if expired or near-expiry.
+ * Proactively refreshes when the token has fewer than 5 minutes remaining so
+ * downstream flows (wake polling, proxy commands) always start with a fresh token.
  * Returns a discriminated result so callers can log exactly what happened.
  */
 export async function getUserAccessToken(
@@ -116,15 +120,20 @@ export async function getUserAccessToken(
     return { ok: false, reason: "not_linked" };
   }
 
-  // Token still valid
-  if (account.expiresAt.getTime() >= Date.now()) {
+  // Token still valid with enough remaining lifetime
+  if (account.expiresAt.getTime() > Date.now() + TOKEN_EXPIRY_BUFFER_MS) {
     return { ok: true, accessToken: account.accessToken, refreshed: false };
   }
 
-  // Token expired — try refresh
+  // Token expired or near-expiry — proactively refresh
   const newToken = await refreshAccessToken(userId, account.refreshToken);
   if (newToken) {
     return { ok: true, accessToken: newToken, refreshed: true };
+  }
+
+  // Refresh failed but token might still be technically valid (near-expiry case)
+  if (account.expiresAt.getTime() > Date.now()) {
+    return { ok: true, accessToken: account.accessToken, refreshed: false };
   }
 
   return { ok: false, reason: "refresh_failed" };
