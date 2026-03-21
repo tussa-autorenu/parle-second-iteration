@@ -66,7 +66,7 @@ async function handleCommand(
   let currentAccessToken = tokenResult.accessToken;
   const fleetClient = createTeslaClient(currentAccessToken);
   const proxyClient = createTeslaProxyClient(currentAccessToken);
-  const tesla = new TeslaApi(fleetClient, proxyClient, vin);
+  const tesla = new TeslaApi(fleetClient, proxyClient, vin, currentAccessToken);
 
   // ── Per-vehicle command mode selection ──
   // true  → vehicle known to need proxy
@@ -98,6 +98,22 @@ async function handleCommand(
   );
 
   const runParams = { vehicleId, teslaVehicleId, command, requestId, triggeredBy, tesla };
+
+  if (chosenMode === "command_protocol_proxy") {
+    req.log.info(
+      {
+        triggeredBy,
+        command,
+        teslaVehicleId,
+        vin,
+        commandMode: chosenMode,
+        proxyConfigured: tesla.proxyConfigured,
+        tokenPresent: !!currentAccessToken,
+        tokenRefreshedOnEntry: tokenResult.refreshed,
+      },
+      "handleCommand: proxy mode — auth diagnostic before command",
+    );
+  }
 
   // Re-fetch the user's Tesla token and update both Axios clients when it
   // has been refreshed since we last captured it. Returns true when the

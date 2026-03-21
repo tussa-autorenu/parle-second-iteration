@@ -159,7 +159,7 @@ export async function vehiclesRoutes(app: FastifyInstance) {
       return ok(reply, { id: v.id, teslaVehicleId: v.teslaVehicleId, vin: v.vin, friendlyName: v.friendlyName, state: null });
     }
 
-    const tesla = new TeslaApi(createTeslaClient(tokenResult.accessToken));
+    const tesla = new TeslaApi(createTeslaClient(tokenResult.accessToken), null, null, tokenResult.accessToken);
     const cached = await getCachedTelemetry(v.id);
     const state = cached ?? await refreshTelemetry(v.id, v.teslaVehicleId, tesla);
     return ok(reply, { id: v.id, teslaVehicleId: v.teslaVehicleId, vin: v.vin, friendlyName: v.friendlyName, state });
@@ -213,7 +213,7 @@ export async function vehiclesRoutes(app: FastifyInstance) {
     );
 
     // ── Fetch live status from Tesla ──
-    const tesla = new TeslaApi(createTeslaClient(tokenResult.accessToken));
+    const tesla = new TeslaApi(createTeslaClient(tokenResult.accessToken), null, null, tokenResult.accessToken);
 
     try {
       const state = await tesla.getState(teslaVehicleId);

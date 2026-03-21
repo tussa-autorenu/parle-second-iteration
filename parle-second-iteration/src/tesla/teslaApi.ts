@@ -150,42 +150,53 @@ export class TeslaApi {
   readonly vin: string | null;
 
   commandMode: CommandMode;
+  private _accessToken: string | null;
 
   /**
    * @param fleetClient  Axios instance for Fleet API (data queries + direct REST commands).
    * @param proxyClient  Optional Axios instance pointed at the official tesla-http-proxy.
    * @param vin          Vehicle VIN — required for proxy mode (proxy uses VIN-based paths).
+   * @param accessToken  Current OAuth access token — stored so it can be injected per-request
+   *                     and survive token refreshes independent of Axios header internals.
    */
-  constructor(fleetClient: AxiosInstance, proxyClient?: AxiosInstance | null, vin?: string | null) {
+  constructor(
+    fleetClient: AxiosInstance,
+    proxyClient?: AxiosInstance | null,
+    vin?: string | null,
+    accessToken?: string | null,
+  ) {
     this.fleetClient = fleetClient;
     this.proxyClient = proxyClient ?? null;
     this.proxyConfigured = this.proxyClient != null;
     this.vin = vin ?? null;
+    this._accessToken = accessToken ?? null;
     this.commandMode = "direct_fleet_rest";
   }
 
   /**
-   * Update the Authorization header on both fleet and proxy clients.
-   * Call after a token refresh so subsequent requests use the new credential.
+   * Update the stored access token so every subsequent request uses it.
+   * Also attempts to patch Axios default headers as a belt-and-suspenders measure,
+   * but the per-request injection in command()/getState() is the authoritative source.
    */
   refreshAuthHeader(newToken: string): void {
+    this._accessToken = newToken;
     const value = `Bearer ${newToken}`;
     for (const client of [this.fleetClient, this.proxyClient]) {
       if (!client) continue;
-      client.defaults.headers["Authorization"] = value;
-      if (
-        client.defaults.headers["common"] &&
-        typeof client.defaults.headers["common"] === "object"
-      ) {
-        (client.defaults.headers["common"] as Record<string, string>)["Authorization"] = value;
-      }
+      try { client.defaults.headers.common["Authorization"] = value; } catch { /* ignore */ }
+      try { client.defaults.headers["Authorization"] = value; } catch { /* ignore */ }
     }
+  }
+
+  /** Build per-request auth headers from the stored token. */
+  private authHeaders(): Record<string, string> | undefined {
+    return this._accessToken ? { Authorization: `Bearer ${this._accessToken}` } : undefined;
   }
 
   async getState(teslaVehicleId: string): Promise<TeslaVehicleState> {
     const path = `/api/1/vehicles/${encodeURIComponent(teslaVehicleId)}/vehicle_data`;
     try {
-      const r = await this.fleetClient.get(path);
+      const r = await this.fleetClient.get(path, { headers: this.authHeaders() });
       const raw = (r.data ?? {}) as JsonObject;
 
       const response = (raw["response"] ?? raw) as JsonObject;
@@ -278,23 +289,23 @@ export class TeslaApi {
   async sendDestination(id: string, body: unknown) { return this.command(id, "send-destination", body); }
 
   private async command(id: string, cmd: string, body?: unknown) {
-    const useProxy = this.commandMode === "command_protocol_proxy" && this.proxyConfigured;
+    // wake_up is a Fleet API endpoint, not a VCP command — always use fleet client.
+    // Only actual vehicle commands (lock, unlock, drive, etc.) go through the proxy.
+    const isWake = cmd === "wake";
+    const useProxy = !isWake && this.commandMode === "command_protocol_proxy" && this.proxyConfigured;
     const activeClient = useProxy ? this.proxyClient! : this.fleetClient;
     const vehicleTag = (useProxy && this.vin) ? this.vin : id;
     const via: CommandMode = useProxy ? "command_protocol_proxy" : "direct_fleet_rest";
 
-    const hdrs = activeClient.defaults.headers as Record<string, unknown> | undefined;
-    const authHeaderPresent = !!(
-      hdrs?.["Authorization"] ??
-      (hdrs?.["common"] as Record<string, unknown> | undefined)?.["Authorization"]
-    );
+    const reqHeaders = this.authHeaders();
+    const authHeaderPresent = !!reqHeaders?.["Authorization"];
 
-    const path = cmd === "wake"
+    const path = isWake
       ? `/api/1/vehicles/${encodeURIComponent(vehicleTag)}/wake_up`
       : `/api/1/vehicles/${encodeURIComponent(vehicleTag)}/command/${TESLA_CMD[cmd] ?? cmd}`;
 
     try {
-      const r = await activeClient.post(path, body ?? {});
+      const r = await activeClient.post(path, body ?? {}, { headers: reqHeaders });
       return { teslaStatus: r.status, data: (r.data ?? {}) as JsonObject, via, authHeaderPresent };
     } catch (e: unknown) {
       const u = extractTeslaError(e);
