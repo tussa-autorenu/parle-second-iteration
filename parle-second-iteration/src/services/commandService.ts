@@ -19,9 +19,15 @@ export type CommandName =
   | "ready-vehicle";
 
 function isTransient(reason: string) {
-  return reason === "tesla_error";
+  return reason === "tesla_error" || reason === "vehicle_asleep_or_offline";
 }
+
+function isVehicleAsleepOrOffline(err: ApiError): boolean {
+  return err.reason === "vehicle_asleep_or_offline" || err.reason === "offline";
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 function getTeslaStatus(err: ApiError | null): number | null {
   if (!err?.details) return null;
   const v = err.details["teslaStatus"];
@@ -58,13 +64,12 @@ export async function runCommand(params: {
   }
 
   // Wake-before-command: full telemetry-polling path when DB row exists,
-  // lightweight fire-and-wait when it doesn't.
+  // lightweight polling path when it doesn't.
   if (params.command !== "wake") {
     if (hasDbRow) {
       await ensureAwake(params.vehicleId!, params.teslaVehicleId, params.tesla);
     } else {
-      await params.tesla.wake(params.teslaVehicleId);
-      await sleep(config.wakePollIntervalMs);
+      await ensureAwakeLightweight(params.teslaVehicleId, params.tesla);
     }
   }
 
@@ -86,6 +91,14 @@ export async function runCommand(params: {
           },
         });
       }
+
+      if (attempt > 0) {
+        log.info(
+          { command: params.command, teslaVehicleId: params.teslaVehicleId, attempt: attempt + 1 },
+          "runCommand: command succeeded after wake-retry",
+        );
+      }
+
       return { replay: false, result: "SUCCESS", teslaStatus: res.teslaStatus };
     } catch (e: unknown) {
       const err = e instanceof ApiError ? e : new ApiError(502, "unknown", "Command failed");
@@ -107,8 +120,34 @@ export async function runCommand(params: {
       );
 
       const shouldRetry = attempt < config.commandRetryCount && isTransient(err.reason);
+      if (!shouldRetry) { attempt += 1; break; }
+
+      // Vehicle fell back asleep between wake and command — re-wake before retry
+      if (isVehicleAsleepOrOffline(err)) {
+        log.info(
+          { command: params.command, teslaVehicleId: params.teslaVehicleId, attempt: attempt + 1 },
+          "runCommand: vehicle asleep/offline during command, re-waking before retry",
+        );
+        try {
+          if (hasDbRow) {
+            await ensureAwake(params.vehicleId!, params.teslaVehicleId, params.tesla);
+          } else {
+            await ensureAwakeLightweight(params.teslaVehicleId, params.tesla);
+          }
+        } catch (wakeErr: unknown) {
+          log.warn(
+            {
+              command: params.command,
+              teslaVehicleId: params.teslaVehicleId,
+              wakeError: wakeErr instanceof Error ? wakeErr.message : String(wakeErr),
+            },
+            "runCommand: re-wake failed, aborting retry",
+          );
+          break;
+        }
+      }
+
       attempt += 1;
-      if (!shouldRetry) break;
       await sleep(250 * attempt);
     }
   }
@@ -155,18 +194,71 @@ export async function runCommand(params: {
 async function ensureAwake(vehicleId: string, teslaVehicleId: string, tesla: TeslaApi) {
   const cached = await getCachedTelemetry(vehicleId);
   if (cached?.onlineStatus === "AWAKE") return;
-  if (cached?.onlineStatus === "OFFLINE") {
-    throw new ApiError(409, "offline", "Vehicle appears offline; use key card fallback.");
-  }
+
+  log.info(
+    { vehicleId, teslaVehicleId, cachedStatus: cached?.onlineStatus ?? "no_cache" },
+    "ensureAwake: vehicle not confirmed awake, sending wake command",
+  );
 
   await tesla.wake(teslaVehicleId);
 
   const deadline = Date.now() + config.wakeTimeoutSeconds * 1000;
   while (Date.now() < deadline) {
-    const state = await refreshTelemetry(vehicleId, teslaVehicleId, tesla);
-    if (state.onlineStatus === "AWAKE") return;
-    if (state.onlineStatus === "OFFLINE") throw new ApiError(409, "offline", "Vehicle is offline; use key card fallback.");
     await sleep(config.wakePollIntervalMs);
+    try {
+      const state = await refreshTelemetry(vehicleId, teslaVehicleId, tesla);
+      if (state.onlineStatus === "AWAKE") {
+        log.info({ vehicleId, teslaVehicleId }, "ensureAwake: vehicle is now awake");
+        return;
+      }
+      log.info(
+        { vehicleId, teslaVehicleId, onlineStatus: state.onlineStatus },
+        "ensureAwake: vehicle not yet awake, continuing to poll",
+      );
+    } catch (pollErr: unknown) {
+      const apiErr = pollErr instanceof ApiError ? pollErr : null;
+      if (apiErr && isVehicleAsleepOrOffline(apiErr)) {
+        log.info(
+          { vehicleId, teslaVehicleId, errorReason: apiErr.reason },
+          "ensureAwake: 408/unavailable during poll (vehicle still waking), continuing",
+        );
+        continue;
+      }
+      throw pollErr;
+    }
+  }
+
+  throw new ApiError(409, "asleep_timeout", "Vehicle did not wake in time; use key card fallback.");
+}
+
+async function ensureAwakeLightweight(teslaVehicleId: string, tesla: TeslaApi) {
+  log.info({ teslaVehicleId }, "ensureAwakeLightweight: sending wake command");
+  await tesla.wake(teslaVehicleId);
+
+  const deadline = Date.now() + config.wakeTimeoutSeconds * 1000;
+  while (Date.now() < deadline) {
+    await sleep(config.wakePollIntervalMs);
+    try {
+      const state = await tesla.getState(teslaVehicleId);
+      if (state.onlineStatus === "AWAKE") {
+        log.info({ teslaVehicleId }, "ensureAwakeLightweight: vehicle is now awake");
+        return;
+      }
+      log.info(
+        { teslaVehicleId, onlineStatus: state.onlineStatus },
+        "ensureAwakeLightweight: vehicle not yet awake, continuing to poll",
+      );
+    } catch (pollErr: unknown) {
+      const apiErr = pollErr instanceof ApiError ? pollErr : null;
+      if (apiErr && isVehicleAsleepOrOffline(apiErr)) {
+        log.info(
+          { teslaVehicleId, errorReason: apiErr.reason },
+          "ensureAwakeLightweight: 408/unavailable during poll (vehicle still waking), continuing",
+        );
+        continue;
+      }
+      throw pollErr;
+    }
   }
 
   throw new ApiError(409, "asleep_timeout", "Vehicle did not wake in time; use key card fallback.");
