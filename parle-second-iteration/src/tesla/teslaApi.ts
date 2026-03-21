@@ -17,6 +17,8 @@ export interface TeslaVehicleState {
   outsideTemp: number | null;
 }
 
+export type CommandMode = "direct_fleet_rest" | "command_protocol_proxy";
+
 type JsonObject = Record<string, unknown>;
 
 function toLowerString(v: unknown): string {
@@ -95,6 +97,12 @@ function extractTeslaError(err: unknown): TeslaUpstreamError {
     message = body;
   }
 
+  if (status === null && !error) {
+    const e = err as { code?: string; message?: string };
+    if (typeof e.code === "string") error = e.code;
+    if (!message && typeof e.message === "string") message = e.message;
+  }
+
   return { teslaStatus: status, teslaError: error, teslaMessage: message };
 }
 
@@ -106,16 +114,19 @@ function describeUpstream(u: TeslaUpstreamError): string {
   return "";
 }
 
-/**
- * Return a copy of the upstream error details that is safe to include in
- * API responses and logs (no tokens / secrets).
- */
 function safeDetails(u: TeslaUpstreamError, extras?: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...u, ...extras };
   for (const key of Object.keys(out)) {
     if (REDACTED_KEYS.has(key.toLowerCase())) out[key] = "[REDACTED]";
   }
   return out;
+}
+
+/**
+ * Combine teslaError + teslaMessage into a single lowercase string for pattern matching.
+ */
+function combinedErrorText(u: TeslaUpstreamError): string {
+  return `${u.teslaError ?? ""} ${u.teslaMessage ?? ""}`.toLowerCase();
 }
 
 /**
@@ -133,15 +144,32 @@ const TESLA_CMD: Record<string, string> = {
 };
 
 export class TeslaApi {
-  constructor(private client: AxiosInstance) {}
+  readonly fleetClient: AxiosInstance;
+  readonly proxyClient: AxiosInstance | null;
+  readonly proxyConfigured: boolean;
+  readonly vin: string | null;
+
+  commandMode: CommandMode;
+
+  /**
+   * @param fleetClient  Axios instance for Fleet API (data queries + direct REST commands).
+   * @param proxyClient  Optional Axios instance pointed at the official tesla-http-proxy.
+   * @param vin          Vehicle VIN — required for proxy mode (proxy uses VIN-based paths).
+   */
+  constructor(fleetClient: AxiosInstance, proxyClient?: AxiosInstance | null, vin?: string | null) {
+    this.fleetClient = fleetClient;
+    this.proxyClient = proxyClient ?? null;
+    this.proxyConfigured = this.proxyClient != null;
+    this.vin = vin ?? null;
+    this.commandMode = "direct_fleet_rest";
+  }
 
   async getState(teslaVehicleId: string): Promise<TeslaVehicleState> {
     const path = `/api/1/vehicles/${encodeURIComponent(teslaVehicleId)}/vehicle_data`;
     try {
-      const r = await this.client.get(path);
+      const r = await this.fleetClient.get(path);
       const raw = (r.data ?? {}) as JsonObject;
 
-      // vehicle_data wraps everything under "response"
       const response = (raw["response"] ?? raw) as JsonObject;
       const vehicleState = (response["vehicle_state"] ?? response["vehicleState"] ?? {}) as JsonObject;
       const chargeState = (response["charge_state"] ?? response["chargeState"] ?? {}) as JsonObject;
@@ -185,12 +213,40 @@ export class TeslaApi {
       };
     } catch (e: unknown) {
       const u = extractTeslaError(e);
+      const detail = describeUpstream(u);
+      const extras = { path };
+
+      if (u.teslaStatus === null) {
+        throw new ApiError(502, "generic_tesla_upstream_error",
+          `Tesla Fleet API unreachable for vehicle_data${detail || ": network error or timeout"}`,
+          safeDetails(u, extras));
+      }
       if (u.teslaStatus === 401 || u.teslaStatus === 403) {
-        throw new ApiError(502, "auth_error",
-          `Tesla auth failed for getState${describeUpstream(u)}`, safeDetails(u, { path }));
+        throw new ApiError(502, "auth_expired_or_invalid",
+          `Tesla auth failed for vehicle_data${detail}`, safeDetails(u, extras));
+      }
+      if (u.teslaStatus === 404) {
+        throw new ApiError(502, "vehicle_not_found",
+          `Tesla returned 404 for vehicle_data${detail}`, safeDetails(u, extras));
+      }
+      if (u.teslaStatus === 408) {
+        throw new ApiError(502, "vehicle_asleep_or_offline",
+          `Vehicle is asleep or unavailable${detail}`, safeDetails(u, extras));
+      }
+      if (u.teslaStatus === 412) {
+        throw new ApiError(502, "tesla_pairing_required",
+          `Vehicle must be paired with this application${detail}`, safeDetails(u, extras));
+      }
+      if (u.teslaStatus === 429) {
+        throw new ApiError(502, "tesla_rate_limited",
+          `Tesla rate-limited vehicle_data; try again in a few minutes`, safeDetails(u, extras));
+      }
+      if (u.teslaStatus >= 500) {
+        throw new ApiError(502, "generic_tesla_upstream_error",
+          `Tesla Fleet API error (HTTP ${u.teslaStatus})${detail}`, safeDetails(u, extras));
       }
       throw new ApiError(502, "tesla_error",
-        `Tesla status fetch failed${describeUpstream(u)}`, safeDetails(u, { path }));
+        `Tesla status fetch failed (HTTP ${u.teslaStatus})${detail}`, safeDetails(u, extras));
     }
   }
 
@@ -204,26 +260,55 @@ export class TeslaApi {
   async sendDestination(id: string, body: unknown) { return this.command(id, "send-destination", body); }
 
   private async command(id: string, cmd: string, body?: unknown) {
-    // Wake uses a dedicated endpoint; everything else goes through /command/
+    const useProxy = this.commandMode === "command_protocol_proxy" && this.proxyConfigured;
+    const activeClient = useProxy ? this.proxyClient! : this.fleetClient;
+    const vehicleTag = (useProxy && this.vin) ? this.vin : id;
+    const via: CommandMode = useProxy ? "command_protocol_proxy" : "direct_fleet_rest";
+
+    const hdrs = activeClient.defaults.headers as Record<string, unknown> | undefined;
+    const authHeaderPresent = !!(
+      hdrs?.["Authorization"] ??
+      (hdrs?.["common"] as Record<string, unknown> | undefined)?.["Authorization"]
+    );
+
     const path = cmd === "wake"
-      ? `/api/1/vehicles/${encodeURIComponent(id)}/wake_up`
-      : `/api/1/vehicles/${encodeURIComponent(id)}/command/${TESLA_CMD[cmd] ?? cmd}`;
+      ? `/api/1/vehicles/${encodeURIComponent(vehicleTag)}/wake_up`
+      : `/api/1/vehicles/${encodeURIComponent(vehicleTag)}/command/${TESLA_CMD[cmd] ?? cmd}`;
 
     try {
-      const r = await this.client.post(path, body ?? {});
-      return { teslaStatus: r.status, data: (r.data ?? {}) as JsonObject };
+      const r = await activeClient.post(path, body ?? {});
+      return { teslaStatus: r.status, data: (r.data ?? {}) as JsonObject, via, authHeaderPresent };
     } catch (e: unknown) {
       const u = extractTeslaError(e);
       const detail = describeUpstream(u);
-      const extras = { command: cmd, vehicleId: id, path, method: "POST" };
+      const combined = combinedErrorText(u);
+      const extras = { command: cmd, vehicleId: id, vin: this.vin, path, method: "POST", via, authHeaderPresent };
+
+      if (u.teslaStatus === null) {
+        throw new ApiError(502, "generic_tesla_upstream_error",
+          `Tesla unreachable for ${cmd}${detail || ": network error or timeout"}`, safeDetails(u, extras));
+      }
 
       if (u.teslaStatus === 401 || u.teslaStatus === 403) {
-        throw new ApiError(502, "auth_error",
+        if (combined.includes("vehicle command protocol") || combined.includes("unsigned command")) {
+          throw new ApiError(502, "vcp_required",
+            `Vehicle requires Tesla Vehicle Command Protocol for ${cmd}${detail}`, safeDetails(u, extras));
+        }
+        if (combined.includes("mobile_access_disabled") || combined.includes("mobile access")) {
+          throw new ApiError(502, "mobile_access_disabled",
+            `Mobile access is disabled on this vehicle${detail}`, safeDetails(u, extras));
+        }
+        throw new ApiError(502, "auth_expired_or_invalid",
           `Tesla rejected auth for ${cmd}${detail}`, safeDetails(u, extras));
       }
+
       if (u.teslaStatus === 404) {
-        throw new ApiError(502, "command_rejected",
+        throw new ApiError(502, "vehicle_not_found",
           `Tesla returned 404 for ${cmd} — vehicle or endpoint not found${detail}`, safeDetails(u, extras));
+      }
+      if (u.teslaStatus === 408 || combined.includes("vehicle_unavailable") || combined.includes("not online")) {
+        throw new ApiError(502, "vehicle_asleep_or_offline",
+          `Vehicle is asleep or offline for ${cmd}${detail}`, safeDetails(u, extras));
       }
       if (u.teslaStatus === 412) {
         throw new ApiError(502, "tesla_pairing_required",
@@ -233,8 +318,8 @@ export class TeslaApi {
         throw new ApiError(502, "tesla_rate_limited",
           `Tesla rate-limited ${cmd}; try again in a few minutes`, safeDetails(u, extras));
       }
-      if (u.teslaStatus !== null && [408, 500, 502, 503, 504].includes(u.teslaStatus)) {
-        throw new ApiError(502, "tesla_error",
+      if ([500, 502, 503, 504].includes(u.teslaStatus)) {
+        throw new ApiError(502, "generic_tesla_upstream_error",
           `Tesla upstream error during ${cmd} (HTTP ${u.teslaStatus})${detail}`, safeDetails(u, extras));
       }
       throw new ApiError(502, "command_rejected",

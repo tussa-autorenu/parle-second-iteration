@@ -29,6 +29,18 @@ export async function listVehicles() {
 }
 
 /**
+ * Persist that a vehicle requires the Vehicle Command Protocol.
+ * Called when a direct Fleet REST command returns a VCP-required error,
+ * so subsequent commands skip straight to the official proxy.
+ */
+export async function markVcpRequired(vehicleId: string): Promise<void> {
+  await prisma.vehicle.update({
+    where: { id: vehicleId },
+    data: { vcpRequired: true, lastCapabilityCheckedAt: new Date() },
+  });
+}
+
+/**
  * Upsert Tesla Fleet vehicles into the local Vehicle table.
  * Matches on teslaVehicleId so manually-seeded rows (e.g. "derby-01")
  * are updated in place rather than duplicated.

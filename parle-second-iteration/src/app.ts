@@ -90,6 +90,15 @@ export async function buildApp() {
     });
   }
 
+  // Startup diagnostic: Tesla integration config
+  app.log.info(
+    {
+      teslaBaseUrl: config.teslaBaseUrl,
+      teslaCommandProxyUrl: config.teslaCommandProxyUrl ?? "(not configured — VCP vehicles will fail until set)",
+    },
+    "Tesla integration config",
+  );
+
   // Routes
   await app.register(teslaAuthRoutes);
   await app.register(vehiclesRoutes);

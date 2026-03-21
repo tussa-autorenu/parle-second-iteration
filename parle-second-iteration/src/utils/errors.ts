@@ -11,6 +11,12 @@ export type ErrorReason =
   | "tesla_pairing_required"
   | "tesla_rate_limited"
   | "tesla_upstream_error"
+  | "vcp_required"
+  | "mobile_access_disabled"
+  | "vehicle_asleep_or_offline"
+  | "vehicle_not_found"
+  | "auth_expired_or_invalid"
+  | "generic_tesla_upstream_error"
   | "unknown";
 
 export class ApiError extends Error {

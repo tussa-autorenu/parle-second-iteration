@@ -38,10 +38,12 @@ enum CommandResult {
 }
 
 model Vehicle {
-  id             String   @id @db.VarChar(64)
-  teslaVehicleId String   @db.VarChar(64)
-  vin            String   @db.VarChar(64)
-  friendlyName   String?  @db.VarChar(128)
+  id             String    @id @db.VarChar(64)
+  teslaVehicleId String    @db.VarChar(64)
+  vin            String    @db.VarChar(64)
+  friendlyName   String?   @db.VarChar(128)
+  vcpRequired    Boolean?
+  lastCapabilityCheckedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
