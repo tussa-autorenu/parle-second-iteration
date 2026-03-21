@@ -58,8 +58,17 @@ export async function vehiclesRoutes(app: FastifyInstance) {
         "GET /vehicles: Tesla API vehicle list",
       );
 
-      const sync = await syncVehiclesToDb(vehicles);
-      req.log.info(sync, "GET /vehicles: DB sync result");
+      // Sync is best-effort — if the DB migration for new Vehicle columns
+      // hasn't been applied yet, we still return the Tesla data.
+      try {
+        const sync = await syncVehiclesToDb(vehicles);
+        req.log.info(sync, "GET /vehicles: DB sync result");
+      } catch (syncErr) {
+        req.log.warn(
+          { err: syncErr instanceof Error ? syncErr.message : String(syncErr) },
+          "GET /vehicles: DB sync failed (migration pending?), returning Tesla data without sync",
+        );
+      }
 
       const results = vehicles.map((v) => ({
         id: v.id,
