@@ -65,7 +65,7 @@ export async function teslaAuthRoutes(app: FastifyInstance) {
       client_id: process.env.TESLA_CLIENT_ID!,
       redirect_uri: process.env.TESLA_REDIRECT_URI!,
       response_type: "code",
-      scope: process.env.TESLA_SCOPES ?? "openid offline_access",
+      scope: process.env.TESLA_SCOPES ?? "openid offline_access vehicle_device_data vehicle_cmds vehicle_charging_cmds",
       state,
       code_challenge: challenge,
       code_challenge_method: "S256",

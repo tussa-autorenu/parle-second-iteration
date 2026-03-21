@@ -22,7 +22,7 @@ export interface TeslaVehicleSummary {
 }
 
 export type AccessTokenResult =
-  | { ok: true; accessToken: string; refreshed: boolean }
+  | { ok: true; accessToken: string; refreshed: boolean; expiresAt: Date }
   | { ok: false; reason: "not_linked" | "refresh_failed" };
 
 // ── Private types (Tesla API responses) ───────────────────
@@ -92,7 +92,7 @@ async function refreshAccessToken(
       },
     });
 
-    return access_token;
+    return { accessToken: access_token, expiresAt };
   } catch {
     return null;
   }
@@ -122,18 +122,18 @@ export async function getUserAccessToken(
 
   // Token still valid with enough remaining lifetime
   if (account.expiresAt.getTime() > Date.now() + TOKEN_EXPIRY_BUFFER_MS) {
-    return { ok: true, accessToken: account.accessToken, refreshed: false };
+    return { ok: true, accessToken: account.accessToken, refreshed: false, expiresAt: account.expiresAt };
   }
 
   // Token expired or near-expiry — proactively refresh
-  const newToken = await refreshAccessToken(userId, account.refreshToken);
-  if (newToken) {
-    return { ok: true, accessToken: newToken, refreshed: true };
+  const refreshResult = await refreshAccessToken(userId, account.refreshToken);
+  if (refreshResult) {
+    return { ok: true, accessToken: refreshResult.accessToken, refreshed: true, expiresAt: refreshResult.expiresAt };
   }
 
   // Refresh failed but token might still be technically valid (near-expiry case)
   if (account.expiresAt.getTime() > Date.now()) {
-    return { ok: true, accessToken: account.accessToken, refreshed: false };
+    return { ok: true, accessToken: account.accessToken, refreshed: false, expiresAt: account.expiresAt };
   }
 
   return { ok: false, reason: "refresh_failed" };
@@ -221,7 +221,7 @@ export async function getTeslaLinkStatus(
   if (tokenExpired) {
     const refreshed = await refreshAccessToken(userId, account.refreshToken);
     if (refreshed) {
-      accessToken = refreshed;
+      accessToken = refreshed.accessToken;
       tokenExpired = false;
     } else {
       // Refresh failed — still linked, but can't query vehicles

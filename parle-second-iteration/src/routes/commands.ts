@@ -37,6 +37,7 @@ async function handleCommand(
       hasAccount: tokenResult.ok,
       reason: tokenResult.ok ? undefined : tokenResult.reason,
       tokenRefreshed: tokenResult.ok ? tokenResult.refreshed : false,
+      tokenExpiresAt: tokenResult.ok ? tokenResult.expiresAt.toISOString() : null,
       authFlow: "per_user",
     },
     "handleCommand: Tesla account lookup",
@@ -100,6 +101,10 @@ async function handleCommand(
   const runParams = { vehicleId, teslaVehicleId, command, requestId, triggeredBy, tesla };
 
   if (chosenMode === "command_protocol_proxy") {
+    const configuredScopes = process.env.TESLA_SCOPES
+      ?? "openid offline_access vehicle_device_data vehicle_cmds vehicle_charging_cmds";
+    const hasVehicleCmdsScope = configuredScopes.includes("vehicle_cmds");
+
     req.log.info(
       {
         triggeredBy,
@@ -109,10 +114,22 @@ async function handleCommand(
         commandMode: chosenMode,
         proxyConfigured: tesla.proxyConfigured,
         tokenPresent: !!currentAccessToken,
+        tokenLength: currentAccessToken.length,
         tokenRefreshedOnEntry: tokenResult.refreshed,
+        tokenExpiresAt: tokenResult.expiresAt.toISOString(),
+        configuredScopes,
+        hasVehicleCmdsScope,
       },
       "handleCommand: proxy mode — auth diagnostic before command",
     );
+
+    if (!hasVehicleCmdsScope) {
+      req.log.warn(
+        { triggeredBy, configuredScopes },
+        "handleCommand: TESLA_SCOPES missing vehicle_cmds — proxy commands will fail with 401. "
+        + "Set TESLA_SCOPES to include vehicle_cmds, then disconnect and re-link the Tesla account.",
+      );
+    }
   }
 
   // Re-fetch the user's Tesla token and update both Axios clients when it
@@ -207,6 +224,10 @@ async function handleCommand(
       err.reason === "auth_expired_or_invalid" &&
       tesla.commandMode === "command_protocol_proxy"
     ) {
+      const configuredScopes = process.env.TESLA_SCOPES
+        ?? "openid offline_access vehicle_device_data vehicle_cmds vehicle_charging_cmds";
+      const scopeMayBeMissing = !configuredScopes.includes("vehicle_cmds");
+
       req.log.info(
         {
           triggeredBy,
@@ -215,6 +236,12 @@ async function handleCommand(
           vin,
           commandMode: tesla.commandMode,
           teslaStatus: err.details?.["teslaStatus"] ?? null,
+          teslaError: err.details?.["teslaError"] ?? null,
+          teslaMessage: err.details?.["teslaMessage"] ?? null,
+          configuredScopes,
+          scopeWarning: scopeMayBeMissing
+            ? "vehicle_cmds scope missing — likely cause of proxy 401"
+            : null,
         },
         "handleCommand: auth failed in proxy mode, attempting token refresh + retry",
       );
@@ -248,6 +275,9 @@ async function handleCommand(
               teslaStatus: retryErr.details?.["teslaStatus"] ?? null,
               authHeaderPresent: retryErr.details?.["authHeaderPresent"] ?? null,
               retryAfterAuthRefresh: true,
+              hint: scopeMayBeMissing
+                ? "Token may lack vehicle_cmds scope. Disconnect and re-link with correct TESLA_SCOPES."
+                : "Token was refreshed but proxy still rejected it. User may need to re-link.",
             },
             "handleCommand: command still failed after auth refresh retry",
           );
