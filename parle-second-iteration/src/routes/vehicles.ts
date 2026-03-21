@@ -6,6 +6,7 @@ import { getVehicleOrThrow, resolveVehicle, syncVehiclesToDb } from "../services
 import { createTeslaClient } from "../clients/teslaClient.js";
 import { TeslaApi } from "../tesla/teslaApi.js";
 import { getCachedTelemetry, refreshTelemetry } from "../services/telemetryService.js";
+import { config } from "../config/env.js";
 import { ApiError } from "../utils/errors.js";
 import { ok, fail } from "../utils/http.js";
 
@@ -46,6 +47,9 @@ export async function vehiclesRoutes(app: FastifyInstance) {
       return ok(reply, []);
     }
 
+    const upstreamPath = "/api/1/vehicles";
+    const upstreamBaseUrl = config.teslaBaseUrl;
+
     try {
       const vehicles = await fetchUserVehicles(tokenResult.accessToken);
 
@@ -54,8 +58,6 @@ export async function vehiclesRoutes(app: FastifyInstance) {
         "GET /vehicles: Tesla API vehicle list",
       );
 
-      // Sync Tesla vehicles into local DB so commands have full
-      // DB support (idempotency, CommandLog, telemetry snapshots).
       const sync = await syncVehiclesToDb(vehicles);
       req.log.info(sync, "GET /vehicles: DB sync result");
 
@@ -69,36 +71,70 @@ export async function vehiclesRoutes(app: FastifyInstance) {
 
       return ok(reply, results);
     } catch (err: unknown) {
-      const status = err instanceof AxiosError ? err.response?.status : undefined;
-      const body = err instanceof AxiosError ? redactBody(err.response?.data) : undefined;
+      const isAxios = err instanceof AxiosError;
+      const status = isAxios ? err.response?.status ?? null : null;
+      const body = isAxios ? redactBody(err.response?.data) : null;
+      const axiosCode = isAxios ? err.code ?? null : null;
+      const errMessage = err instanceof Error ? err.message : String(err);
+
+      // Extract upstream error/message from body
+      let teslaError: string | null = null;
+      let teslaMessage: string | null = null;
+      if (body && typeof body === "object") {
+        const b = body as Record<string, unknown>;
+        teslaError = typeof b["error"] === "string" ? b["error"] : null;
+        teslaMessage = typeof b["error_description"] === "string"
+          ? b["error_description"]
+          : typeof b["message"] === "string" ? b["message"] : null;
+      }
 
       req.log.warn(
-        { teslaStatus: status ?? null, teslaBody: body ?? null },
+        {
+          triggeredBy: userId,
+          upstreamBaseUrl,
+          upstreamPath,
+          teslaStatus: status,
+          teslaError,
+          teslaMessage,
+          teslaBody: body,
+          axiosCode,
+          errMessage,
+        },
         "GET /vehicles: Tesla Fleet API call failed",
       );
 
+      const details = { teslaStatus: status, teslaError, teslaMessage, axiosCode, upstreamPath };
+
       if (status === 401 || status === 403) {
         return fail(reply, new ApiError(401, "tesla_auth_error",
-          "Tesla rejected the access token. Please re-link your Tesla account."));
+          "Tesla rejected the access token. Please re-link your Tesla account.", details));
       }
       if (status === 412) {
         return fail(reply, new ApiError(409, "tesla_pairing_required",
           "Your vehicle must be paired with this application. "
           + "Open your vehicle's touchscreen, go to Controls > Locks > "
           + "Allow Mobile Access, then tap \"Set Up\" for third-party apps "
-          + "and approve this application."));
+          + "and approve this application.", details));
       }
       if (status === 429) {
+        reply.header("Retry-After", "60");
         return fail(reply, new ApiError(429, "tesla_rate_limited",
-          "Tesla Fleet API rate limit reached. Please try again in a few minutes."));
+          "Tesla Fleet API rate limit reached. Please try again in a few minutes.", details));
       }
-      if (status && status >= 500) {
+      if (status !== null && status >= 500) {
+        reply.header("Retry-After", "30");
         return fail(reply, new ApiError(502, "tesla_upstream_error",
-          "Tesla Fleet API is temporarily unavailable. Please try again later."));
+          `Tesla Fleet API returned HTTP ${status}. Please try again later.`, details));
+      }
+
+      // Non-HTTP errors: network timeout, DNS failure, connection refused, etc.
+      if (status === null) {
+        return fail(reply, new ApiError(502, "tesla_upstream_error",
+          `Tesla Fleet API unreachable: ${axiosCode ?? errMessage}`, details));
       }
 
       return fail(reply, new ApiError(502, "tesla_upstream_error",
-        "Failed to fetch vehicles from Tesla."));
+        `Tesla Fleet API error (HTTP ${status}): ${teslaError ?? teslaMessage ?? "unknown"}`, details));
     }
   });
 
