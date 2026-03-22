@@ -17,6 +17,7 @@ import { logsRoutes } from "./routes/logs.js";
 import { teslaAuthRoutes } from "./routes/teslaAuth.js";
 
 import { fail, ok } from "./utils/http.js";
+import { checkProxyService } from "./utils/proxyDiagnostic.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -91,10 +92,15 @@ export async function buildApp() {
   }
 
   // Startup diagnostic: Tesla integration config
+  const proxyUrl = config.teslaCommandProxyUrl;
   app.log.info(
     {
       teslaBaseUrl: config.teslaBaseUrl,
-      teslaCommandProxyUrl: config.teslaCommandProxyUrl ?? "(not configured — VCP vehicles will fail until set)",
+      teslaCommandProxyUrl: proxyUrl ?? "(not configured — VCP vehicles will fail until set)",
+      proxyConfigured: !!proxyUrl,
+      configuredScopes: process.env.TESLA_SCOPES ?? "(using default)",
+      oauthClientConfigured: !!process.env.TESLA_CLIENT_ID,
+      privateKeyPath: "private-key.pem (used by the Tesla Vehicle Command proxy, not by this API)",
     },
     "Tesla integration config",
   );
@@ -104,6 +110,62 @@ export async function buildApp() {
   await app.register(vehiclesRoutes);
   await app.register(commandsRoutes);
   await app.register(logsRoutes);
+
+  // ── On-demand proxy diagnostic ──
+  // Always available (protected by authPlugin's x-parle-api-key requirement).
+  if (proxyUrl) {
+    app.get("/debug/proxy-check", { schema: { tags: ["debug"] } }, async (_req, reply) => {
+      const result = await checkProxyService(proxyUrl);
+      return ok(reply, result);
+    });
+  }
+
+  // ── Non-blocking startup probe ──
+  // After the app is fully ready, check whether the proxy URL actually points
+  // at the official Tesla Vehicle Command proxy or at our own Fastify API.
+  if (proxyUrl) {
+    app.addHook("onReady", () => {
+      checkProxyService(proxyUrl)
+        .then((result) => {
+          if (result.isFastifyApi) {
+            app.log.error(
+              {
+                proxyUrl: result.proxyUrl,
+                healthzStatus: result.healthzStatus,
+                rootStatus: result.rootStatus,
+                serverHeader: result.serverHeader,
+                verdict: result.verdict,
+              },
+              "CRITICAL: TESLA_COMMAND_PROXY_URL points at the Parle Fastify API, NOT the Tesla Vehicle Command proxy. " +
+              "Every proxy-mode command will fail with 401. You must deploy the official tesla-http-proxy " +
+              "(github.com/teslamotors/vehicle-command) on a separate origin with the private key configured.",
+            );
+          } else if (!result.reachable) {
+            app.log.warn(
+              { proxyUrl: result.proxyUrl, error: result.error, verdict: result.verdict },
+              "Proxy startup check: proxy URL is unreachable",
+            );
+          } else {
+            app.log.info(
+              {
+                proxyUrl: result.proxyUrl,
+                healthzStatus: result.healthzStatus,
+                rootStatus: result.rootStatus,
+                serverHeader: result.serverHeader,
+                verdict: result.verdict,
+              },
+              "Proxy startup check: passed",
+            );
+          }
+        })
+        .catch((err) => {
+          app.log.warn(
+            { proxyUrl, error: err instanceof Error ? err.message : String(err) },
+            "Proxy startup check: diagnostic failed (non-blocking)",
+          );
+        });
+    });
+  }
 
   // Central error handler
   app.setErrorHandler((err, _req, reply) => fail(reply, err));

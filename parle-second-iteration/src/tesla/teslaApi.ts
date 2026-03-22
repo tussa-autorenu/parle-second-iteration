@@ -311,7 +311,13 @@ export class TeslaApi {
       const u = extractTeslaError(e);
       const detail = describeUpstream(u);
       const combined = combinedErrorText(u);
-      const extras = { command: cmd, vehicleId: id, vin: this.vin, path, method: "POST", via, authHeaderPresent };
+      const proxyBaseUrl = useProxy ? activeClient.defaults.baseURL ?? null : null;
+      const extras = {
+        command: cmd, vehicleId: id, vin: this.vin, path, method: "POST",
+        via, authHeaderPresent,
+        proxyBaseUrl,
+        tokenLength: this._accessToken?.length ?? 0,
+      };
 
       if (u.teslaStatus === null) {
         throw new ApiError(502, "generic_tesla_upstream_error",
@@ -334,8 +340,12 @@ export class TeslaApi {
           throw new ApiError(502, "mobile_access_disabled",
             `Mobile access is disabled on this vehicle${detail}`, safeDetails(u, extras));
         }
-        throw new ApiError(502, "auth_expired_or_invalid",
-          `Tesla rejected auth for ${cmd}${detail}`, safeDetails(u, extras));
+        const authMsg = useProxy
+          ? `Proxy at ${proxyBaseUrl} rejected auth for ${cmd}${detail}. ` +
+            "Verify: (1) proxy is the official tesla-http-proxy, (2) private key is configured, " +
+            "(3) OAuth token has vehicle_cmds scope."
+          : `Tesla rejected auth for ${cmd}${detail}`;
+        throw new ApiError(502, "auth_expired_or_invalid", authMsg, safeDetails(u, extras));
       }
 
       if (u.teslaStatus === 404) {
