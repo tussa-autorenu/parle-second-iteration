@@ -276,10 +276,27 @@ async function execute(params: { teslaVehicleId: string; command: CommandName; t
     case "flash": return params.tesla.flash(params.teslaVehicleId);
     case "precondition-on": return params.tesla.preconditionOn(params.teslaVehicleId);
     case "send-destination": return params.tesla.sendDestination(params.teslaVehicleId, params.body);
-    case "ready-vehicle":
+    case "ready-vehicle": {
       await params.tesla.wake(params.teslaVehicleId);
-      await params.tesla.unlock(params.teslaVehicleId);
+      try {
+        await params.tesla.unlock(params.teslaVehicleId);
+      } catch (unlockErr: unknown) {
+        if (unlockErr instanceof ApiError && unlockErr.reason === "vehicle_in_service") {
+          log.warn(
+            { command: params.command, teslaVehicleId: params.teslaVehicleId },
+            "ready flow aborted at unlock: vehicle is currently in service",
+          );
+          throw new ApiError(
+            unlockErr.statusCode,
+            "vehicle_in_service",
+            `Ready flow aborted at unlock: ${unlockErr.message}`,
+            unlockErr.details,
+          );
+        }
+        throw unlockErr;
+      }
       return params.tesla.enableDrive(params.teslaVehicleId);
+    }
     default: throw new ApiError(400, "bad_request", "Unknown command");
   }
 }

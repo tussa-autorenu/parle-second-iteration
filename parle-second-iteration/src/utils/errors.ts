@@ -15,6 +15,7 @@ export type ErrorReason =
   | "mobile_access_disabled"
   | "vehicle_asleep_or_offline"
   | "vehicle_not_found"
+  | "vehicle_in_service"
   | "auth_expired_or_invalid"
   | "generic_tesla_upstream_error"
   | "unknown";
