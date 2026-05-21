@@ -10,6 +10,7 @@ import { VehicleSelectionScene } from "@/components/scenes/VehicleSelectionScene
 import { EnableAccessScene } from "@/components/scenes/EnableAccessScene";
 import { FinalInstructionsScene } from "@/components/scenes/FinalInstructionsScene";
 import { DashboardScene } from "@/components/scenes/DashboardScene";
+import type { ApiVehicle } from "@/lib/api";
 
 type Step =
   | "oauth"
@@ -30,11 +31,12 @@ type Step =
  */
 export function OnboardingFlow() {
   const [step, setStep] = useState<Step>("oauth");
-  // Vehicle IDs the user picked on the selection screen — threaded through
-  // to the enable-access screen so it shows only those vehicles.
-  const [selectedVehicleIds, setSelectedVehicleIds] = useState<string[]>([]);
+  // Vehicles the user picked on the selection screen — threaded through
+  // to the enable-access screen so it shows only those vehicles without
+  // re-fetching.
+  const [selectedVehicles, setSelectedVehicles] = useState<ApiVehicle[]>([]);
   // Vehicle IDs the user successfully *connected* on the Enable Access
-  // screen — these become the user's fleet on the dashboard.
+  // screen — these get passed to the activate endpoint on Final Instructions.
   const [connectedVehicleIds, setConnectedVehicleIds] = useState<string[]>([]);
 
   // The stepper in the nav is only meaningful during the onboarding steps.
@@ -79,8 +81,8 @@ export function OnboardingFlow() {
           {step === "vehicles" && (
             <VehicleSelectionScene
               key="vehicles"
-              onContinue={(ids) => {
-                setSelectedVehicleIds(ids);
+              onContinue={(vehicles) => {
+                setSelectedVehicles(vehicles);
                 setStep("enableAccess");
               }}
             />
@@ -88,7 +90,7 @@ export function OnboardingFlow() {
           {step === "enableAccess" && (
             <EnableAccessScene
               key="enableAccess"
-              vehicleIds={selectedVehicleIds}
+              vehicles={selectedVehicles}
               onBack={() => setStep("vehicles")}
               onContinue={(ids) => {
                 setConnectedVehicleIds(ids);
@@ -99,16 +101,12 @@ export function OnboardingFlow() {
           {step === "finalInstructions" && (
             <FinalInstructionsScene
               key="finalInstructions"
+              vehicleIds={connectedVehicleIds}
               onBack={() => setStep("enableAccess")}
               onActivate={() => setStep("dashboard")}
             />
           )}
-          {step === "dashboard" && (
-            <DashboardScene
-              key="dashboard"
-              vehicleIds={connectedVehicleIds}
-            />
-          )}
+          {step === "dashboard" && <DashboardScene key="dashboard" />}
         </AnimatePresence>
       </main>
     </>
