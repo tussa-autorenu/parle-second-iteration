@@ -50,11 +50,31 @@ function setIdentity(req: FastifyRequest): void {
   req.requestId = String(req.headers["x-request-id"] ?? "");
 }
 
+/**
+ * Build the set of accepted API keys from config.
+ * Includes PARLE_API_KEY (always) and PARLE_EXTERNAL_API_KEY (if set).
+ * Trims each value to defend against .env trailing whitespace.
+ * Empty strings are filtered out so an unset external key never validates "".
+ */
+function buildValidApiKeys(): string[] {
+  return [config.parleApiKey, config.parleExternalApiKey]
+    .filter((k): k is string => typeof k === "string" && k.trim().length > 0)
+    .map((k) => k.trim());
+}
+
 export const authPlugin: FastifyPluginAsync = fp(async (app) => {
-  // ── Startup diagnostic (never prints the raw secret) ──
-  const keyLoaded = typeof config.parleApiKey === "string" && config.parleApiKey.length > 0;
+  // ── Startup diagnostic (never prints the raw secrets) ──
+  const internalLoaded =
+    typeof config.parleApiKey === "string" && config.parleApiKey.length > 0;
+  const externalLoaded =
+    typeof config.parleExternalApiKey === "string" &&
+    config.parleExternalApiKey.length > 0;
   app.log.info(
-    `PARLE_API_KEY loaded: ${keyLoaded}, length=${config.parleApiKey?.length ?? 0}`,
+    `PARLE_API_KEY loaded: ${internalLoaded}, length=${
+      config.parleApiKey?.length ?? 0
+    }; PARLE_EXTERNAL_API_KEY loaded: ${externalLoaded}, length=${
+      config.parleExternalApiKey?.length ?? 0
+    }`,
   );
 
   app.addHook("onRequest", async (req) => {
@@ -89,10 +109,23 @@ export const authPlugin: FastifyPluginAsync = fp(async (app) => {
       );
     }
 
-    // Trim both sides to defend against .env trailing whitespace / header padding
-    if (rawApiKey.trim() !== config.parleApiKey.trim()) {
+    // Accept either the internal PARLE_API_KEY or the external (frontend-safe)
+    // PARLE_EXTERNAL_API_KEY. Trim both sides to defend against .env trailing
+    // whitespace / header padding.
+    const provided = rawApiKey.trim();
+    const validKeys = buildValidApiKeys();
+    if (!validKeys.includes(provided)) {
       throw new ApiError(401, "auth_error", "Invalid x-parle-api-key");
     }
+
+    // Tag which key matched so logs/audits can distinguish internal vs frontend
+    // traffic, without ever logging the key value itself.
+    const matchedExternal =
+      externalLoaded &&
+      provided === (config.parleExternalApiKey ?? "").trim();
+    req.log.debug(
+      `x-parle-api-key matched: source=${matchedExternal ? "external" : "internal"}`,
+    );
 
     setIdentity(req);
   });

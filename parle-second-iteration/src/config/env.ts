@@ -10,6 +10,10 @@ const Env = z.object({
   PARLE_API_KEY: isProduction
     ? z.string().min(8)
     : z.string().default("dev_key_change_me"),
+  // Optional second API key for the Vercel fleet web app. When set, the
+  // backend accepts either PARLE_API_KEY or PARLE_EXTERNAL_API_KEY in the
+  // x-parle-api-key header. Leaving it unset preserves single-key behavior.
+  PARLE_EXTERNAL_API_KEY: z.string().min(8).optional(),
   DATABASE_URL: z.string().min(10),
   REDIS_URL: z.string().url().optional(),
   CACHE_TTL_SECONDS: z.string().default("10"),
@@ -29,6 +33,7 @@ export const config = {
   nodeEnv: env.NODE_ENV,
   logLevel: env.LOG_LEVEL,
   parleApiKey: env.PARLE_API_KEY,
+  parleExternalApiKey: env.PARLE_EXTERNAL_API_KEY,
   databaseUrl: env.DATABASE_URL,
   redisUrl: env.REDIS_URL,
   cacheTtlSeconds: Number(env.CACHE_TTL_SECONDS),
