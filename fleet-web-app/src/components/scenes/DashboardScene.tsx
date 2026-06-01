@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
 import { fadeOnly, sceneStagger, slideUp } from "@/components/animations";
 import {
@@ -8,22 +8,7 @@ import {
   type VehicleStatus,
 } from "@/components/VehicleStatusCard";
 import { EarningsCard } from "@/components/EarningsCard";
-import { VEHICLES } from "@/data/vehicles";
-
-type DashboardSceneProps = {
-  /** Vehicles the user successfully connected on the Enable Access screen. */
-  vehicleIds: string[];
-};
-
-/**
- * Hardcoded demo trip / earnings stats per vehicle id. In a real app these
- * would come from the backend. The numbers come from the Figma frame.
- */
-const STATS: Record<string, { trips: number; earnings: number }> = {
-  "1": { trips: 8, earnings: 1120 },
-  "2": { trips: 12, earnings: 1840 },
-  "3": { trips: 5, earnings: 2400 },
-};
+import { getActiveFleetVehicles, type ApiVehicle } from "@/lib/api";
 
 /**
  * Step 5 — Owner Dashboard.
@@ -31,13 +16,42 @@ const STATS: Record<string, { trips: number; earnings: number }> = {
  * Heading + copy fade in place; the row of vehicle cards slides up from
  * below. Each card defaults to OFFLINE; the toggle on a card flips it
  * to ONLINE (and back).
+ *
+ * Vehicles are fetched from the backend's active-fleet endpoint so the
+ * dashboard reflects whatever the user just activated.
  */
-export function DashboardScene({ vehicleIds }: DashboardSceneProps) {
-  const [statuses, setStatuses] = useState<Record<string, VehicleStatus>>(
-    () => Object.fromEntries(vehicleIds.map((id) => [id, "offline"])),
+export function DashboardScene() {
+  const [vehicles, setVehicles] = useState<ApiVehicle[]>([]);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">(
+    "loading",
   );
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [statuses, setStatuses] = useState<Record<string, VehicleStatus>>({});
 
-  const vehicles = VEHICLES.filter((v) => vehicleIds.includes(v.id));
+  useEffect(() => {
+    let cancelled = false;
+    getActiveFleetVehicles()
+      .then((list) => {
+        if (cancelled) return;
+        setVehicles(list);
+        setStatuses(Object.fromEntries(list.map((v) => [v.id, "offline"])));
+        setStatus("ready");
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setErrorMessage(
+          err instanceof Error
+            ? err.message
+            : "We couldn’t load your fleet. Please try again.",
+        );
+        setStatus("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const vehicleIds = useMemo(() => vehicles.map((v) => v.id), [vehicles]);
 
   // With a single vehicle, swap the proportions: vehicle takes 1/3, chart 2/3.
   // The chart becomes the visual centerpiece since there's only one car to show.
@@ -74,7 +88,11 @@ export function DashboardScene({ vehicleIds }: DashboardSceneProps) {
           My Fleet
         </h1>
         <p className="text-base leading-[22px] text-desat-7">
-          Manage vehicles online status, and track earnings.
+          {status === "ready"
+            ? "Manage vehicles online status, and track earnings."
+            : status === "loading"
+            ? "Loading your fleet…"
+            : errorMessage ?? "We couldn’t load your fleet."}
         </p>
       </motion.div>
 
@@ -93,22 +111,19 @@ export function DashboardScene({ vehicleIds }: DashboardSceneProps) {
       >
         {/* Vehicles — width and column count depend on how many vehicles we have */}
         <div className={vehiclesAreaClass}>
-          {vehicles.map((v) => {
-            const stats = STATS[v.id] ?? { trips: 0, earnings: 0 };
-            return (
-              <VehicleStatusCard
-                key={v.id}
-                year={v.year}
-                model={v.model}
-                vin={v.vin}
-                imageSrc={v.image}
-                trips={stats.trips}
-                earnings={stats.earnings}
-                status={statuses[v.id] ?? "offline"}
-                onToggle={() => toggle(v.id)}
-              />
-            );
-          })}
+          {vehicles.map((v) => (
+            <VehicleStatusCard
+              key={v.id}
+              year={v.year}
+              model={v.model}
+              vin={v.vin}
+              imageSrc={v.image}
+              trips={v.trips ?? 0}
+              earnings={v.earnings ?? 0}
+              status={statuses[v.id] ?? "offline"}
+              onToggle={() => toggle(v.id)}
+            />
+          ))}
         </div>
 
         {/* Earnings chart — width depends on how many vehicles we have */}

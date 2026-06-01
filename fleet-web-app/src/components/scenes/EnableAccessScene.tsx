@@ -4,11 +4,11 @@ import { useState } from "react";
 import { motion } from "motion/react";
 import { VehicleRow, type VehicleRowState } from "@/components/VehicleRow";
 import { fadeOnly, sceneStagger, slideUp } from "@/components/animations";
-import { VEHICLES } from "@/data/vehicles";
+import { confirmThirdPartyAccess, type ApiVehicle } from "@/lib/api";
 
 type EnableAccessSceneProps = {
-  /** IDs of vehicles selected on the previous screen. */
-  vehicleIds: string[];
+  /** Vehicles selected on the previous screen. */
+  vehicles: ApiVehicle[];
   onBack?: () => void;
   onContinue?: (connectedIds: string[]) => void;
 };
@@ -17,45 +17,54 @@ type EnableAccessSceneProps = {
 const CARD_SHADOW =
   "0 100px 217px rgba(211,164,255,0.08), 0 42px 91px rgba(211,164,255,0.06), 0 22px 48px rgba(211,164,255,0.05), 0 13px 27px rgba(211,164,255,0.04), 0 7px 14px rgba(211,164,255,0.03), 0 3px 6px rgba(211,164,255,0.02)";
 
-// Cascade timing: click → selected immediately → loading after this many ms
-// → connected after the loading duration completes.
+// Brief "selected" pulse before flipping the row into its loading spinner,
+// so the user sees their click register before the network call starts.
 const SELECTED_TO_LOADING_MS = 600;
-const LOADING_DURATION_MS = 2000;
 
 /**
  * Step 3 — Enable Third-Party Access.
  *
  * Each row is its own little state machine. Clicking a default row triggers
- * the cascade: selected (purple highlight) → loading (spinner) → connected
- * (green text). Once connected, the row is locked.
+ * the cascade: selected (purple highlight) → loading (spinner while the
+ * backend confirms access for that vehicle) → connected (green text). Once
+ * connected, the row is locked. If the backend call fails the row rolls
+ * back to `default` and an inline error appears.
  *
  * The CTA enables the moment any one row hits `connected`.
  */
 export function EnableAccessScene({
-  vehicleIds,
+  vehicles,
   onBack,
   onContinue,
 }: EnableAccessSceneProps) {
   // Per-row state, keyed by vehicle id
   const [rowStates, setRowStates] = useState<Record<string, VehicleRowState>>(
-    () => Object.fromEntries(vehicleIds.map((id) => [id, "default"])),
+    () => Object.fromEntries(vehicles.map((v) => [v.id, "default"])),
   );
-
-  const vehicles = VEHICLES.filter((v) => vehicleIds.includes(v.id));
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   function trigger(id: string) {
     // Guard: only act on rows that haven't started yet.
     if (rowStates[id] !== "default") return;
 
+    setErrorMessage(null);
     setRowStates((prev) => ({ ...prev, [id]: "selected" }));
 
     window.setTimeout(() => {
       setRowStates((prev) => ({ ...prev, [id]: "loading" }));
+      confirmThirdPartyAccess([id])
+        .then(() => {
+          setRowStates((prev) => ({ ...prev, [id]: "connected" }));
+        })
+        .catch((err: unknown) => {
+          setRowStates((prev) => ({ ...prev, [id]: "default" }));
+          setErrorMessage(
+            err instanceof Error
+              ? err.message
+              : "We couldn’t confirm access for that vehicle. Please try again.",
+          );
+        });
     }, SELECTED_TO_LOADING_MS);
-
-    window.setTimeout(() => {
-      setRowStates((prev) => ({ ...prev, [id]: "connected" }));
-    }, SELECTED_TO_LOADING_MS + LOADING_DURATION_MS);
   }
 
   const connectedIds = Object.entries(rowStates)
@@ -104,12 +113,20 @@ export function EnableAccessScene({
               model={v.model}
               vin={v.vin}
               imageSrc={v.image}
-              imageScale={v.imageScale}
               state={rowStates[v.id] ?? "default"}
               onTrigger={() => trigger(v.id)}
             />
           ))}
         </div>
+
+        {errorMessage && (
+          <p
+            role="alert"
+            className="text-center text-sm leading-[18px] text-[#dc2626]"
+          >
+            {errorMessage}
+          </p>
+        )}
 
         <p className="text-base leading-[22px] text-desat-7">
           You can revoke these permissions at any time from your Tesla account

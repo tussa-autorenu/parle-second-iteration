@@ -4,8 +4,11 @@ import { useState } from "react";
 import Image from "next/image";
 import { motion } from "motion/react";
 import { fadeOnly, sceneStagger, slideUp } from "@/components/animations";
+import { activateFleet } from "@/lib/api";
 
 type FinalInstructionsSceneProps = {
+  /** Vehicle IDs that were connected on the Enable Access screen. */
+  vehicleIds: string[];
   onBack?: () => void;
   onActivate?: () => void;
 };
@@ -51,10 +54,31 @@ const GUIDELINES = [
  * back link to the previous screen.
  */
 export function FinalInstructionsScene({
+  vehicleIds,
   onBack,
   onActivate,
 }: FinalInstructionsSceneProps) {
   const [agreed, setAgreed] = useState(false);
+  const [activating, setActivating] = useState(false);
+  const [activateError, setActivateError] = useState<string | null>(null);
+
+  async function handleActivate() {
+    if (!agreed || activating) return;
+    setActivating(true);
+    setActivateError(null);
+    try {
+      await activateFleet(vehicleIds);
+      onActivate?.();
+    } catch (err: unknown) {
+      setActivateError(
+        err instanceof Error
+          ? err.message
+          : "We couldn’t activate your fleet. Please try again.",
+      );
+    } finally {
+      setActivating(false);
+    }
+  }
 
   return (
     <motion.div
@@ -147,12 +171,21 @@ export function FinalInstructionsScene({
         {/* Activate CTA */}
         <button
           type="button"
-          disabled={!agreed}
-          onClick={onActivate}
+          disabled={!agreed || activating}
+          onClick={handleActivate}
           className="flex h-14 w-full items-center justify-center rounded-[14px] bg-accent-dark text-base font-bold text-white shadow-[0_4px_12px_rgba(29,6,51,0.25)] transition-[transform,box-shadow,opacity] duration-200 ease-out hover:-translate-y-0.5 hover:shadow-[0_8px_20px_rgba(29,6,51,0.3)] active:translate-y-0 active:shadow-[0_4px_12px_rgba(29,6,51,0.25)] disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:translate-y-0 disabled:hover:shadow-[0_4px_12px_rgba(29,6,51,0.25)]"
         >
-          Activate My Fleet
+          {activating ? "Activating…" : "Activate My Fleet"}
         </button>
+
+        {activateError && (
+          <p
+            role="alert"
+            className="text-center text-sm leading-[18px] text-[#dc2626]"
+          >
+            {activateError}
+          </p>
+        )}
 
         {/* Back link */}
         <button

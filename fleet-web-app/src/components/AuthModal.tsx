@@ -1,9 +1,14 @@
 "use client";
 
 import Image from "next/image";
+import { startTeslaOAuth } from "@/lib/api";
 
 type AuthModalProps = {
-  /** Called when the user clicks "Connect with Tesla". */
+  /**
+   * Optional hook fired alongside the redirect — useful for analytics or
+   * keeping the parent flow in sync. The real navigation always happens via
+   * `startTeslaOAuth()` so the backend can drive the OAuth handshake.
+   */
   onConnect?: () => void;
 };
 
@@ -16,6 +21,11 @@ type AuthModalProps = {
  *  - Tesla logo → heading → description → CTA → footer
  */
 export function AuthModal({ onConnect }: AuthModalProps = {}) {
+  function handleConnect() {
+    onConnect?.();
+    startTeslaOAuth();
+  }
+
   return (
     <div
       className="flex h-[480px] w-[440px] flex-col items-center gap-3 overflow-hidden rounded-2xl border border-accent-light bg-white px-4 pt-12 pb-8"
@@ -52,7 +62,7 @@ export function AuthModal({ onConnect }: AuthModalProps = {}) {
       <div className="flex w-[384px] flex-col items-center py-4">
         <button
           type="button"
-          onClick={onConnect}
+          onClick={handleConnect}
           className="flex h-14 items-center justify-center gap-2 rounded-xl bg-accent-dark px-6 text-white transition-[transform,box-shadow] duration-200 ease-out hover:-translate-y-0.5 hover:shadow-[0_10px_20px_rgba(29,6,51,0.18)] active:translate-y-0 active:shadow-none"
         >
           <span className="relative h-[23px] w-6 shrink-0">
