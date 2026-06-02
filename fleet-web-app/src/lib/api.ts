@@ -132,14 +132,24 @@ function unwrapVehicleList(
 }
 
 /**
+ * Build the backend Tesla OAuth start URL for the web flow. Appends
+ * `returnTo=web` so the backend redirects back to the web app (not the mobile
+ * deep link) once the OAuth handshake completes.
+ */
+export function getOAuthStartUrl(userId?: string): string {
+  const params = new URLSearchParams({ returnTo: "web" });
+  if (userId) params.set("userId", userId);
+  return `${getApiBaseUrl()}/auth/tesla/start?${params.toString()}`;
+}
+
+/**
  * Redirect the browser to the backend's Tesla OAuth start endpoint. The
  * backend handles the OAuth handshake and redirects back to the frontend
  * once a session is established.
  */
-export function startTeslaOAuth(): void {
+export function startTeslaOAuth(userId?: string): void {
   if (typeof window === "undefined") return;
-  const url = `${getApiBaseUrl()}/auth/tesla/start`;
-  window.location.assign(url);
+  window.location.assign(getOAuthStartUrl(userId));
 }
 
 /** GET /vehicles?scope=onboarding — vehicles available to add to the fleet. */
