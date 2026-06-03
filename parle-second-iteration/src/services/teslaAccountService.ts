@@ -46,18 +46,24 @@ interface TeslaRefreshTokenResponse {
   expires_in: number;
 }
 
+/** Result of a successful access-token refresh. */
+type RefreshedTeslaToken = {
+  accessToken: string;
+  expiresAt: Date;
+};
+
 // ── Internal helpers ──────────────────────────────────────
 
 /**
  * Refresh an expired Tesla access token using the refresh_token grant.
  * Updates the TeslaAccount row in the database with the new credentials.
- * Returns the new access token, or null if refresh fails.
+ * Returns the new access token + expiry, or null if refresh fails.
  * Never leaks tokens in logs.
  */
 async function refreshAccessToken(
   userId: string,
   refreshToken: string,
-): Promise<string | null> {
+): Promise<RefreshedTeslaToken | null> {
   const tokenUrl = process.env.TESLA_TOKEN_URL;
   const clientId = process.env.TESLA_CLIENT_ID;
   if (!tokenUrl || !clientId) return null;
