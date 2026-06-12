@@ -1,189 +1,190 @@
 /**
  * Backend API client for the Parle fleet web app.
  *
- * All requests target the URL in `NEXT_PUBLIC_API_BASE_URL`. Tesla OAuth
- * secrets and any other credentials live on the backend — the frontend only
- * needs the public base URL and a session cookie issued by our own API.
+ * Every request goes to the backend at `NEXT_PUBLIC_API_BASE_URL` — never to
+ * a frontend route and never to a localhost fallback. Protected endpoints
+ * require two headers:
  *
- * Set `NEXT_PUBLIC_API_BASE_URL` in `.env.local`, e.g.
- *   NEXT_PUBLIC_API_BASE_URL=http://localhost:8080
+ *   x-parle-api-key:  NEXT_PUBLIC_PARLE_API_KEY (frontend-safe external key)
+ *   x-triggered-by:   the Supabase user id (identifies the user)
+ *
+ * Tesla secrets and the Supabase service-role key never appear here.
  */
 
+export class ApiError extends Error {
+  status: number;
+  reason: string;
+  constructor(message: string, status: number, reason = "unknown") {
+    super(message);
+    this.status = status;
+    this.reason = reason;
+    this.name = "ApiError";
+  }
+}
+
+/** Backend success/failure envelope: { ok: true, data } | { ok: false, error }. */
+type Envelope<T> =
+  | { ok: true; data: T }
+  | { ok: false; error?: { reason?: string; message?: string } };
+
+function getApiBaseUrl(): string {
+  const base = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").trim();
+  if (!base) {
+    throw new ApiError(
+      "Backend URL is not configured. Set NEXT_PUBLIC_API_BASE_URL.",
+      0,
+      "not_configured",
+    );
+  }
+  return base.replace(/\/+$/, "");
+}
+
+function getApiKey(): string {
+  return (process.env.NEXT_PUBLIC_PARLE_API_KEY ?? "").trim();
+}
+
 /**
- * Local fallback vehicle thumbnails. Used when the backend does not provide
- * an `image` for a vehicle so the UI degrades to the existing Figma artwork.
+ * Centralized request helper. Prefixes `path` with the backend base URL,
+ * attaches auth headers, unwraps the `{ ok, data }` envelope, and converts
+ * failures into readable ApiError messages.
  */
+async function apiFetch<T>(
+  path: string,
+  opts: { userId?: string; method?: string; body?: unknown } = {},
+): Promise<T> {
+  const url = `${getApiBaseUrl()}${path}`;
+
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "x-parle-api-key": getApiKey(),
+  };
+  if (opts.userId) headers["x-triggered-by"] = opts.userId;
+  if (opts.body !== undefined) headers["Content-Type"] = "application/json";
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: opts.method ?? "GET",
+      headers,
+      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+    });
+  } catch {
+    throw new ApiError(
+      "Could not reach the Parle backend. Check your connection and try again.",
+      0,
+      "network_error",
+    );
+  }
+
+  let payload: Envelope<T> | null = null;
+  try {
+    payload = (await res.json()) as Envelope<T>;
+  } catch {
+    // Non-JSON body — fall through to the status-based error below.
+  }
+
+  if (!res.ok || !payload || payload.ok !== true) {
+    const reason =
+      (payload && payload.ok === false && payload.error?.reason) || "unknown";
+    const message =
+      (payload && payload.ok === false && payload.error?.message) ||
+      `Request failed (${res.status} ${res.statusText})`;
+    throw new ApiError(message, res.status, reason);
+  }
+
+  return payload.data;
+}
+
+// ── Tesla OAuth ─────────────────────────────────────────────
+
+/**
+ * Backend Tesla OAuth start URL for the web flow. Always absolute
+ * (`${API_BASE}/auth/tesla/start?...`), with `returnTo=web` so the backend
+ * redirects back to this web app instead of the mobile deep link.
+ */
+export function getOAuthStartUrl(userId: string): string {
+  const params = new URLSearchParams({ userId, returnTo: "web" });
+  return `${getApiBaseUrl()}/auth/tesla/start?${params.toString()}`;
+}
+
+/** Full-page redirect to the backend OAuth start endpoint. */
+export function startTeslaOAuth(userId: string): void {
+  if (typeof window === "undefined") return;
+  window.location.assign(getOAuthStartUrl(userId));
+}
+
+// ── Tesla link status ───────────────────────────────────────
+
+export type TeslaStatus = {
+  linked: boolean;
+  vehicleCount: number;
+  hasVehicles: boolean;
+  tokenExpired?: boolean;
+  linkedAt?: string;
+  updatedAt?: string;
+};
+
+/** GET /auth/tesla/status — is this user's Tesla account linked? */
+export function getTeslaStatus(userId: string): Promise<TeslaStatus> {
+  return apiFetch<TeslaStatus>("/auth/tesla/status", { userId });
+}
+
+/** POST /auth/tesla/disconnect — remove the user's stored Tesla tokens. */
+export function disconnectTesla(
+  userId: string,
+): Promise<{ disconnected: boolean }> {
+  return apiFetch<{ disconnected: boolean }>("/auth/tesla/disconnect", {
+    userId,
+    method: "POST",
+  });
+}
+
+// ── Vehicles ────────────────────────────────────────────────
+
+/** Local thumbnails so cards always have an image. */
 const FALLBACK_THUMBNAILS = [
   "/assets/vehicle_white_thumbnail@2x.png",
   "/assets/vehicle_red_thumbnail@2x.png",
   "/assets/vehicle_black_thumbnail@2x.png",
 ] as const;
 
-/**
- * Vehicle shape the UI expects. We normalize whatever the backend returns
- * into this shape so the existing card components don't need to change.
- */
-export type ApiVehicle = {
+export type Vehicle = {
   id: string;
   vin: string;
-  year: string;
-  model: string;
-  /** Optional human-friendly nickname coming from the backend. */
-  name?: string;
-  /** Resolved thumbnail URL — either backend-provided or a local fallback. */
+  name: string;
+  state: string;
   image: string;
-  /** Optional fleet stats — populated by the active-fleet endpoint when available. */
-  trips?: number;
-  earnings?: number;
 };
 
-/** Shape we accept from the backend before normalization. Permissive on purpose. */
+/** Raw backend vehicle shape (GET /vehicles). Permissive on purpose. */
 type RawVehicle = {
   id?: string | number;
+  teslaVehicleId?: string | number;
   vin?: string;
-  year?: string | number;
-  model?: string;
-  name?: string;
-  image?: string | null;
-  thumbnail?: string | null;
-  trips?: number;
-  earnings?: number;
+  friendlyName?: string | null;
+  state?: string | null;
 };
 
-function getApiBaseUrl(): string {
-  const base = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
-  return base.replace(/\/+$/, "");
-}
-
-/** Stable hash so the same vehicle id always picks the same fallback. */
-function pickFallbackThumbnail(seed: string): string {
+/** Stable hash so the same vehicle id always picks the same thumbnail. */
+function pickThumbnail(seed: string): string {
   let h = 0;
-  for (let i = 0; i < seed.length; i++) {
-    h = (h * 31 + seed.charCodeAt(i)) | 0;
-  }
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
   return FALLBACK_THUMBNAILS[Math.abs(h) % FALLBACK_THUMBNAILS.length];
 }
 
-function normalizeVehicle(raw: RawVehicle, index: number): ApiVehicle {
-  const id = String(raw.id ?? raw.vin ?? `vehicle-${index}`);
-  const vin = String(raw.vin ?? "");
-  const year = raw.year != null ? String(raw.year) : "";
-  const model = String(raw.model ?? raw.name ?? "");
-  const name = raw.name != null ? String(raw.name) : undefined;
-  const backendImage =
-    typeof raw.image === "string" && raw.image.length > 0
-      ? raw.image
-      : typeof raw.thumbnail === "string" && raw.thumbnail.length > 0
-      ? raw.thumbnail
-      : null;
+function normalizeVehicle(raw: RawVehicle, index: number): Vehicle {
+  const id = String(raw.id ?? raw.teslaVehicleId ?? raw.vin ?? `vehicle-${index}`);
   return {
     id,
-    vin,
-    year,
-    model,
-    name,
-    image: backendImage ?? pickFallbackThumbnail(id),
-    trips: typeof raw.trips === "number" ? raw.trips : undefined,
-    earnings: typeof raw.earnings === "number" ? raw.earnings : undefined,
+    vin: String(raw.vin ?? ""),
+    name: raw.friendlyName?.trim() || `Tesla ${String(raw.vin ?? "").slice(-6)}`,
+    state: String(raw.state ?? "unknown"),
+    image: pickThumbnail(id),
   };
 }
 
-class ApiError extends Error {
-  status: number;
-  constructor(message: string, status: number) {
-    super(message);
-    this.status = status;
-    this.name = "ApiError";
-  }
+/** GET /vehicles — the user's Tesla vehicles (empty when not linked). */
+export async function getVehicles(userId: string): Promise<Vehicle[]> {
+  const data = await apiFetch<RawVehicle[]>("/vehicles", { userId });
+  return (Array.isArray(data) ? data : []).map(normalizeVehicle);
 }
-
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const base = getApiBaseUrl();
-  const url = `${base}${path}`;
-  const res = await fetch(url, {
-    ...init,
-    headers: {
-      Accept: "application/json",
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      ...(init?.headers ?? {}),
-    },
-    // Session is cookie-based after Tesla OAuth completes on the backend.
-    credentials: "include",
-  });
-  if (!res.ok) {
-    throw new ApiError(
-      `Request to ${path} failed (${res.status} ${res.statusText})`,
-      res.status,
-    );
-  }
-  if (res.status === 204) {
-    return undefined as T;
-  }
-  return (await res.json()) as T;
-}
-
-/** Extract a vehicle list whether the backend returns an array or `{ vehicles: [...] }`. */
-function unwrapVehicleList(
-  data: RawVehicle[] | { vehicles?: RawVehicle[] } | null | undefined,
-): RawVehicle[] {
-  if (Array.isArray(data)) return data;
-  if (data && Array.isArray(data.vehicles)) return data.vehicles;
-  return [];
-}
-
-/**
- * Build the backend Tesla OAuth start URL for the web flow. Appends
- * `returnTo=web` so the backend redirects back to the web app (not the mobile
- * deep link) once the OAuth handshake completes.
- */
-export function getOAuthStartUrl(userId?: string): string {
-  const params = new URLSearchParams({ returnTo: "web" });
-  if (userId) params.set("userId", userId);
-  return `${getApiBaseUrl()}/auth/tesla/start?${params.toString()}`;
-}
-
-/**
- * Redirect the browser to the backend's Tesla OAuth start endpoint. The
- * backend handles the OAuth handshake and redirects back to the frontend
- * once a session is established.
- */
-export function startTeslaOAuth(userId?: string): void {
-  if (typeof window === "undefined") return;
-  window.location.assign(getOAuthStartUrl(userId));
-}
-
-/** GET /vehicles?scope=onboarding — vehicles available to add to the fleet. */
-export async function getOnboardingVehicles(): Promise<ApiVehicle[]> {
-  const data = await apiFetch<RawVehicle[] | { vehicles?: RawVehicle[] }>(
-    "/vehicles?scope=onboarding",
-  );
-  return unwrapVehicleList(data).map((raw, i) => normalizeVehicle(raw, i));
-}
-
-/** POST /onboarding/third-party-access/confirm — confirm the user has enabled Parle in the car. */
-export async function confirmThirdPartyAccess(
-  vehicleIds: string[],
-): Promise<void> {
-  await apiFetch<void>("/onboarding/third-party-access/confirm", {
-    method: "POST",
-    body: JSON.stringify({ vehicleIds }),
-  });
-}
-
-/** POST /onboarding/activate — finalize the fleet so it goes live. */
-export async function activateFleet(vehicleIds: string[]): Promise<void> {
-  await apiFetch<void>("/onboarding/activate", {
-    method: "POST",
-    body: JSON.stringify({ vehicleIds }),
-  });
-}
-
-/** GET /vehicles?status=active — vehicles that belong to the user's live fleet. */
-export async function getActiveFleetVehicles(): Promise<ApiVehicle[]> {
-  const data = await apiFetch<RawVehicle[] | { vehicles?: RawVehicle[] }>(
-    "/vehicles?status=active",
-  );
-  return unwrapVehicleList(data).map((raw, i) => normalizeVehicle(raw, i));
-}
-
-export { ApiError };
