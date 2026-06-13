@@ -188,3 +188,121 @@ export async function getVehicles(userId: string): Promise<Vehicle[]> {
   const data = await apiFetch<RawVehicle[]>("/vehicles", { userId });
   return (Array.isArray(data) ? data : []).map(normalizeVehicle);
 }
+
+// ── Vehicle live status ─────────────────────────────────────
+
+/**
+ * Live status for a single vehicle. Mirrors GET /vehicles/:id/status. Every
+ * field is nullable because Tesla may not report it while the car is asleep.
+ */
+export type VehicleStatus = {
+  state: string;
+  batteryLevel: number | null;
+  isLocked: boolean | null;
+  chargingState: string | null;
+  rangeKm: number | null;
+  insideTemp: number | null;
+  outsideTemp: number | null;
+  lastSeenAt: string | null;
+  lastLat: number | null;
+  lastLng: number | null;
+};
+
+/** GET /vehicles/:id/status — live Tesla state for one vehicle. */
+export function getVehicleStatus(
+  userId: string,
+  vehicleId: string,
+): Promise<VehicleStatus> {
+  return apiFetch<VehicleStatus>(
+    `/vehicles/${encodeURIComponent(vehicleId)}/status`,
+    { userId },
+  );
+}
+
+// ── Commands ────────────────────────────────────────────────
+
+/** Backend command response. Extra fields vary per command/route. */
+export type CommandResult = {
+  command?: string;
+  requestId?: string;
+  vehicleId?: string;
+  [key: string]: unknown;
+};
+
+function runVehicleCommand(
+  userId: string,
+  vehicleId: string,
+  command: "wake" | "lock" | "unlock" | "enable-drive" | "ready",
+): Promise<CommandResult> {
+  return apiFetch<CommandResult>(
+    `/vehicles/${encodeURIComponent(vehicleId)}/${command}`,
+    { userId, method: "POST", body: {} },
+  );
+}
+
+/** POST /vehicles/:id/wake */
+export function wakeVehicle(userId: string, vehicleId: string) {
+  return runVehicleCommand(userId, vehicleId, "wake");
+}
+
+/** POST /vehicles/:id/lock */
+export function lockVehicle(userId: string, vehicleId: string) {
+  return runVehicleCommand(userId, vehicleId, "lock");
+}
+
+/** POST /vehicles/:id/unlock */
+export function unlockVehicle(userId: string, vehicleId: string) {
+  return runVehicleCommand(userId, vehicleId, "unlock");
+}
+
+/** POST /vehicles/:id/enable-drive */
+export function enableDriveVehicle(userId: string, vehicleId: string) {
+  return runVehicleCommand(userId, vehicleId, "enable-drive");
+}
+
+/** POST /vehicles/:id/ready — wake → unlock → enable-drive shortcut. */
+export function readyVehicle(userId: string, vehicleId: string) {
+  return runVehicleCommand(userId, vehicleId, "ready");
+}
+
+// ── Command logs ────────────────────────────────────────────
+
+/** A row from GET /logs/commands (backend CommandLog). */
+export type CommandLogEntry = {
+  id: string;
+  requestId: string;
+  vehicleId: string;
+  command: string;
+  triggeredBy: string;
+  result: string;
+  errorReason: string | null;
+  errorMessage: string | null;
+  teslaStatus: number | null;
+  createdAt: string;
+};
+
+/**
+ * GET /logs/commands?vehicleId=&triggeredBy=&limit= — recent command history
+ * for one vehicle. Returns newest-first (backend orders by createdAt desc).
+ */
+export async function getVehicleLogs(
+  userId: string,
+  vehicleId: string,
+  limit = 10,
+): Promise<CommandLogEntry[]> {
+  const params = new URLSearchParams({
+    vehicleId,
+    triggeredBy: userId,
+    limit: String(limit),
+  });
+  const data = await apiFetch<{ logs?: CommandLogEntry[] }>(
+    `/logs/commands?${params.toString()}`,
+    { userId },
+  );
+  return Array.isArray(data.logs) ? data.logs : [];
+}
+
+// NOTE: There is no backend access-scheduling endpoint yet. Scheduled access
+// windows are stored locally per user+vehicle (see src/lib/schedules.ts) and
+// are clearly labelled as local drafts in the UI. When a real endpoint exists,
+// add e.g. saveAccessSchedule(userId, vehicleId, payload) here using apiFetch.

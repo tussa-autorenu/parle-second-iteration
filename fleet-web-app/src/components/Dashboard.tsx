@@ -1,12 +1,15 @@
 "use client";
 
 /**
- * Signed-in home: Tesla connection status, connect/disconnect, and the
- * vehicle list. Mirrors the Rork app flow — connect Tesla first, then load
- * the cars and pick which ones belong to the active fleet.
+ * Signed-in fleet control panel.
  *
- * Fleet selection is stored per-user in localStorage for the MVP; commands
- * and telemetry continue to live on the backend.
+ * Flow (mirrors the Rork app):
+ *   1. Show Tesla connection status; Connect Tesla if not linked.
+ *   2. Once linked, load the user's vehicles.
+ *   3. User selects which vehicles belong to their fleet (persisted per user
+ *      in localStorage).
+ *   4. Each selected vehicle gets a full management card (status, commands,
+ *      logs, local-draft scheduling) via <VehicleControlCard>.
  */
 
 import Image from "next/image";
@@ -21,6 +24,7 @@ import {
   type TeslaStatus,
   type Vehicle,
 } from "@/lib/api";
+import { VehicleControlCard } from "./VehicleControlCard";
 
 type Banner = { kind: "success" | "error"; text: string } | null;
 
@@ -58,7 +62,6 @@ export function Dashboard() {
   const [status, setStatus] = useState<TeslaStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
-  // Bumped by retry/disconnect handlers to re-run the status effect.
   const [statusVersion, setStatusVersion] = useState(0);
 
   const [vehicles, setVehicles] = useState<Vehicle[] | null>(null);
@@ -77,7 +80,6 @@ export function Dashboard() {
     const linkedParam = params.get("linked");
     if (linkedParam === null) return;
 
-    // Clean the query string so refreshes don't re-show the banner.
     window.history.replaceState(null, "", window.location.pathname);
 
     const reason = params.get("error");
@@ -91,8 +93,6 @@ export function Dashboard() {
               : "Tesla connection failed. Please try again.",
           };
 
-    // Deferred so the state update happens outside the effect body
-    // (react-hooks/set-state-in-effect).
     const timer = window.setTimeout(() => setBanner(next), 0);
     return () => window.clearTimeout(timer);
   }, []);
@@ -169,6 +169,7 @@ export function Dashboard() {
 
   async function handleDisconnect() {
     if (!userId || disconnecting) return;
+    if (!window.confirm("Disconnect your Tesla account from Parle?")) return;
     setDisconnecting(true);
     try {
       await disconnectTesla(userId);
@@ -185,11 +186,14 @@ export function Dashboard() {
     }
   }
 
+  const selectedVehicles =
+    vehicles?.filter((v) => fleet.has(v.id)) ?? [];
+
   return (
     <div className="flex min-h-screen flex-col bg-desat-0">
-      {/* ── Header ── */}
+      {/* ── Top bar ── */}
       <header className="border-b border-desat-2 bg-white">
-        <div className="mx-auto flex max-w-4xl items-center justify-between px-4 py-4">
+        <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-4">
           <Image
             src="/assets/Parle_Logo.svg"
             alt="Parle"
@@ -212,8 +216,7 @@ export function Dashboard() {
         </div>
       </header>
 
-      <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-6 px-4 py-8">
-        {/* ── OAuth / action banner ── */}
+      <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-6 px-4 py-8">
         {banner && (
           <div
             role="status"
@@ -303,16 +306,16 @@ export function Dashboard() {
           </div>
         </section>
 
-        {/* ── Vehicles ── */}
+        {/* ── Vehicle selection ── */}
         {linked && (
           <section className="flex flex-col gap-4">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-bold text-accent-dark">
-                  Your cars
+                  Select your cars
                 </h2>
                 <p className="text-sm text-desat-7">
-                  Select the cars you want in your Parle fleet.
+                  Choose which cars to manage in your Parle fleet.
                 </p>
               </div>
               <button
@@ -355,64 +358,87 @@ export function Dashboard() {
             )}
 
             {vehicles !== null && vehicles.length > 0 && (
-              <ul className="grid gap-4 sm:grid-cols-2">
+              <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {vehicles.map((v) => {
                   const inFleet = fleet.has(v.id);
                   return (
-                    <li
-                      key={v.id}
-                      className={`rounded-2xl border bg-white p-5 transition-colors ${
-                        inFleet ? "border-accent-primary" : "border-desat-2"
-                      }`}
-                    >
-                      <div className="flex items-center gap-4">
-                        <div className="relative h-14 w-24 shrink-0">
+                    <li key={v.id}>
+                      <button
+                        type="button"
+                        onClick={() => toggleFleet(v.id)}
+                        aria-pressed={inFleet}
+                        className={`flex w-full items-center gap-3 rounded-2xl border bg-white p-4 text-left transition-colors ${
+                          inFleet
+                            ? "border-accent-primary ring-1 ring-accent-primary"
+                            : "border-desat-2 hover:border-desat-3"
+                        }`}
+                      >
+                        <div className="relative h-10 w-16 shrink-0">
                           <Image
                             src={v.image}
                             alt={v.name}
                             fill
-                            sizes="96px"
+                            sizes="64px"
                             className="object-contain"
                           />
                         </div>
-                        <div className="min-w-0">
-                          <p className="truncate font-bold text-accent-dark">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-bold text-accent-dark">
                             {v.name}
                           </p>
-                          {v.vin && (
-                            <p className="truncate font-mono text-xs text-desat-7">
-                              {v.vin}
-                            </p>
-                          )}
-                          <p className="mt-0.5 text-xs capitalize text-desat-7">
-                            {v.state}
+                          <p className="truncate text-xs text-desat-7">
+                            {v.vin || v.state}
                           </p>
                         </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => toggleFleet(v.id)}
-                        className={`mt-4 w-full rounded-xl py-2.5 text-sm font-medium transition-colors ${
-                          inFleet
-                            ? "bg-desat-1 text-accent-dark hover:bg-desat-2"
-                            : "bg-accent-dark text-white hover:opacity-90"
-                        }`}
-                      >
-                        {inFleet ? "Remove from fleet" : "Add to fleet"}
+                        <span
+                          className={`flex size-5 shrink-0 items-center justify-center rounded-full border text-xs ${
+                            inFleet
+                              ? "border-accent-primary bg-accent-primary text-white"
+                              : "border-desat-3 text-transparent"
+                          }`}
+                        >
+                          ✓
+                        </span>
                       </button>
                     </li>
                   );
                 })}
               </ul>
             )}
-
-            {vehicles !== null && fleet.size > 0 && (
-              <p className="text-sm text-desat-7">
-                {fleet.size} car{fleet.size === 1 ? "" : "s"} in your fleet.
-              </p>
-            )}
           </section>
         )}
+
+        {/* ── Management grid for selected vehicles ── */}
+        {linked && selectedVehicles.length > 0 && (
+          <section className="flex flex-col gap-4">
+            <div>
+              <h2 className="text-lg font-bold text-accent-dark">
+                Manage fleet
+              </h2>
+              <p className="text-sm text-desat-7">
+                {selectedVehicles.length} car
+                {selectedVehicles.length === 1 ? "" : "s"} selected.
+              </p>
+            </div>
+            <div className="grid gap-5 lg:grid-cols-2">
+              {selectedVehicles.map((v) =>
+                userId ? (
+                  <VehicleControlCard key={v.id} userId={userId} vehicle={v} />
+                ) : null,
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* ── Prompt to select when linked but none chosen ── */}
+        {linked &&
+          vehicles !== null &&
+          vehicles.length > 0 &&
+          selectedVehicles.length === 0 && (
+            <p className="text-center text-sm text-desat-7">
+              Select one or more cars above to start managing them.
+            </p>
+          )}
       </main>
     </div>
   );
