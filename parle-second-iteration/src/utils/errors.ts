@@ -6,6 +6,7 @@ export type ErrorReason =
   | "rate_limited"
   | "not_found"
   | "bad_request"
+  | "access_denied"
   | "tesla_error"
   | "tesla_auth_error"
   | "tesla_pairing_required"

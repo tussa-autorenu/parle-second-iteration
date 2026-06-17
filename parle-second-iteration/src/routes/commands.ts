@@ -5,6 +5,7 @@ import { resolveVehicle, markVcpRequired } from "../services/vehicleService.js";
 import { createTeslaClient, createTeslaProxyClient } from "../clients/teslaClient.js";
 import { TeslaApi, type CommandMode } from "../tesla/teslaApi.js";
 import { getUserAccessToken } from "../services/teslaAccountService.js";
+import { authorizeVehicleAction } from "../services/shareService.js";
 import { runCommand, type CommandName } from "../services/commandService.js";
 import { ApiError } from "../utils/errors.js";
 import { ok, fail } from "../utils/http.js";
@@ -28,19 +29,33 @@ async function handleCommand(
 
   req.log.info({ triggeredBy, command }, "handleCommand: user identity");
 
-  // ── Per-user Tesla token ──
-  const tokenResult = await getUserAccessToken(triggeredBy);
+  // ── Share-aware authorization (owner or active guest) ──
+  // Owners use their own Tesla token; authorized guests run with the owner's
+  // token. Throws 403 when the caller isn't allowed or lacks the permission.
+  let auth;
+  try {
+    auth = await authorizeVehicleAction(triggeredBy, id, command);
+  } catch (e) {
+    return fail(reply, e);
+  }
+  // Whose Tesla token to use (the owner, for guests).
+  const tokenUserId = auth.tokenUserId;
+  const tokenResult = auth.tokenResult;
 
   req.log.info(
     {
       triggeredBy,
+      role: auth.role,
+      ownerUserId: auth.ownerUserId,
+      accessId: auth.accessId,
+      tokenUserId,
       hasAccount: tokenResult.ok,
       reason: tokenResult.ok ? undefined : tokenResult.reason,
       tokenRefreshed: tokenResult.ok ? tokenResult.refreshed : false,
       tokenExpiresAt: tokenResult.ok ? tokenResult.expiresAt.toISOString() : null,
-      authFlow: "per_user",
+      authFlow: auth.role === "guest" ? "guest_via_owner" : "per_user",
     },
-    "handleCommand: Tesla account lookup",
+    "handleCommand: authorization + Tesla account lookup",
   );
 
   if (!tokenResult.ok) {
@@ -136,10 +151,10 @@ async function handleCommand(
   // has been refreshed since we last captured it. Returns true when the
   // TeslaAccount was found (even if no refresh was needed), false on failure.
   const refreshTokenForRetry = async (reason: string): Promise<boolean> => {
-    const fresh = await getUserAccessToken(triggeredBy);
+    const fresh = await getUserAccessToken(tokenUserId);
     if (!fresh.ok) {
       req.log.warn(
-        { triggeredBy, reason: fresh.reason, retryReason: reason },
+        { triggeredBy, tokenUserId, reason: fresh.reason, retryReason: reason },
         "handleCommand: token re-fetch failed before retry",
       );
       return false;
