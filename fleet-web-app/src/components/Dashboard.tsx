@@ -1,32 +1,36 @@
 "use client";
 
 /**
- * Signed-in fleet control panel.
+ * Signed-in fleet dashboard (old Parlé flow):
+ *   1. Connect Tesla (if not linked).
+ *   2. Select which Teslas belong to your fleet (persisted per user).
+ *   3. Selected vehicles render as cards — each with live status, commands,
+ *      share-access controls and scheduled-access drafts directly underneath.
  *
- * Flow (mirrors the Rork app):
- *   1. Show Tesla connection status; Connect Tesla if not linked.
- *   2. Once linked, load the user's vehicles.
- *   3. User selects which vehicles belong to their fleet (persisted per user
- *      in localStorage).
- *   4. Each selected vehicle gets a full management card (status, commands,
- *      logs, local-draft scheduling) via <VehicleControlCard>.
+ * Guests (no Tesla needed) redeem a ride-share code from the header area and
+ * their shared vehicles appear in a dedicated section, clearly labeled.
  */
 
 import Image from "next/image";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import {
   ApiError,
   disconnectTesla,
   getTeslaStatus,
+  getTemporaryAccess,
   getVehicles,
   startTeslaOAuth,
+  type ShareAccess,
   type TeslaStatus,
   type Vehicle,
 } from "@/lib/api";
 import { VehicleControlCard } from "./VehicleControlCard";
+import { RedeemCodeForm } from "./RedeemCodeForm";
 
 type Banner = { kind: "success" | "error"; text: string } | null;
+
+const SHARED_VEHICLE_IMAGE = "/assets/vehicle_white_thumbnail@2x.png";
 
 function errorMessage(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -50,7 +54,7 @@ function saveFleetSelection(userId: string, ids: Set<string>) {
   try {
     localStorage.setItem(fleetStorageKey(userId), JSON.stringify([...ids]));
   } catch {
-    // Storage unavailable (private mode etc.) — selection just won't persist.
+    // Storage unavailable — selection just won't persist.
   }
 }
 
@@ -72,16 +76,19 @@ export function Dashboard() {
   const [fleet, setFleet] = useState<Set<string>>(new Set());
   const [disconnecting, setDisconnecting] = useState(false);
 
+  const [access, setAccess] = useState<ShareAccess | null>(null);
+  const [accessVersion, setAccessVersion] = useState(0);
+
   const linked = status?.linked === true;
+
+  const refreshAccess = useCallback(() => setAccessVersion((v) => v + 1), []);
 
   // ── OAuth return banner (?linked=1 / ?linked=0&error=…) ──
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const linkedParam = params.get("linked");
     if (linkedParam === null) return;
-
     window.history.replaceState(null, "", window.location.pathname);
-
     const reason = params.get("error");
     const next: Banner =
       linkedParam === "1"
@@ -92,7 +99,6 @@ export function Dashboard() {
               ? `Tesla connection failed: ${reason.replace(/_/g, " ")}`
               : "Tesla connection failed. Please try again.",
           };
-
     const timer = window.setTimeout(() => setBanner(next), 0);
     return () => window.clearTimeout(timer);
   }, []);
@@ -150,6 +156,23 @@ export function Dashboard() {
     };
   }, [userId, linked, vehiclesVersion]);
 
+  // ── Temporary share access (both roles) ──
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    getTemporaryAccess(userId)
+      .then((a) => {
+        if (!cancelled) setAccess(a);
+      })
+      .catch(() => {
+        // No access / endpoint unavailable — treat as empty rather than erroring.
+        if (!cancelled) setAccess({ asGuest: [], asOwner: [] });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, accessVersion]);
+
   function refreshVehicles() {
     setVehiclesLoading(true);
     setVehiclesError(null);
@@ -186,8 +209,11 @@ export function Dashboard() {
     }
   }
 
-  const selectedVehicles =
-    vehicles?.filter((v) => fleet.has(v.id)) ?? [];
+  if (!userId) return null;
+
+  const selectedVehicles = vehicles?.filter((v) => fleet.has(v.id)) ?? [];
+  const guestAccess = access?.asGuest ?? [];
+  const ownerGrants = access?.asOwner ?? [];
 
   return (
     <div className="flex min-h-screen flex-col bg-desat-0">
@@ -236,6 +262,27 @@ export function Dashboard() {
             </button>
           </div>
         )}
+
+        {/* ── Guest redemption (near header) ── */}
+        <section className="flex flex-col gap-3 rounded-2xl border border-desat-2 bg-white p-5 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-base font-bold text-accent-dark">
+              Have a ride-share code?
+            </h2>
+            <p className="text-sm text-desat-7">
+              Redeem a code to control a Tesla someone shared with you. No Tesla
+              account needed.
+            </p>
+          </div>
+          <RedeemCodeForm
+            userId={userId}
+            compact
+            onRedeemed={() => {
+              setBanner({ kind: "success", text: "Ride-share access added." });
+              refreshAccess();
+            }}
+          />
+        </section>
 
         {/* ── Tesla connection card ── */}
         <section className="rounded-2xl border border-desat-2 bg-white p-6">
@@ -286,7 +333,7 @@ export function Dashboard() {
               {!statusLoading && !statusError && !linked && (
                 <button
                   type="button"
-                  onClick={() => userId && startTeslaOAuth(userId)}
+                  onClick={() => startTeslaOAuth(userId)}
                   className="rounded-xl bg-accent-dark px-5 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
                 >
                   Connect Tesla
@@ -306,16 +353,16 @@ export function Dashboard() {
           </div>
         </section>
 
-        {/* ── Vehicle selection ── */}
+        {/* ── Fleet selection ── */}
         {linked && (
           <section className="flex flex-col gap-4">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-bold text-accent-dark">
-                  Select your cars
+                  Select your fleet
                 </h2>
                 <p className="text-sm text-desat-7">
-                  Choose which cars to manage in your Parle fleet.
+                  Choose which cars to manage. Selected cars appear below.
                 </p>
               </div>
               <button
@@ -351,8 +398,8 @@ export function Dashboard() {
               <div className="rounded-2xl border border-dashed border-desat-3 bg-white p-10 text-center">
                 <p className="font-medium text-accent-dark">No cars found</p>
                 <p className="mt-1 text-sm text-desat-7">
-                  Your Tesla account is connected but returned no vehicles.
-                  Make sure your car appears in the Tesla app, then refresh.
+                  Your Tesla account is connected but returned no vehicles. Make
+                  sure your car appears in the Tesla app, then refresh.
                 </p>
               </div>
             )}
@@ -408,24 +455,26 @@ export function Dashboard() {
           </section>
         )}
 
-        {/* ── Management grid for selected vehicles ── */}
+        {/* ── Your fleet (selected owned vehicles) ── */}
         {linked && selectedVehicles.length > 0 && (
           <section className="flex flex-col gap-4">
             <div>
-              <h2 className="text-lg font-bold text-accent-dark">
-                Manage fleet
-              </h2>
+              <h2 className="text-lg font-bold text-accent-dark">Your fleet</h2>
               <p className="text-sm text-desat-7">
                 {selectedVehicles.length} car
                 {selectedVehicles.length === 1 ? "" : "s"} selected.
               </p>
             </div>
             <div className="grid gap-5 lg:grid-cols-2">
-              {selectedVehicles.map((v) =>
-                userId ? (
-                  <VehicleControlCard key={v.id} userId={userId} vehicle={v} />
-                ) : null,
-              )}
+              {selectedVehicles.map((v) => (
+                <VehicleControlCard
+                  key={v.id}
+                  userId={userId}
+                  vehicle={v}
+                  guestAccesses={ownerGrants.filter((a) => a.vehicleId === v.id)}
+                  onAccessChanged={refreshAccess}
+                />
+              ))}
             </div>
           </section>
         )}
@@ -439,6 +488,42 @@ export function Dashboard() {
               Select one or more cars above to start managing them.
             </p>
           )}
+
+        {/* ── Shared with you (guest access) ── */}
+        {guestAccess.length > 0 && (
+          <section className="flex flex-col gap-4">
+            <div>
+              <h2 className="text-lg font-bold text-accent-dark">
+                Shared with you
+              </h2>
+              <p className="text-sm text-desat-7">
+                Temporary access to {guestAccess.length} vehicle
+                {guestAccess.length === 1 ? "" : "s"}.
+              </p>
+            </div>
+            <div className="grid gap-5 lg:grid-cols-2">
+              {guestAccess.map((a) => {
+                const vehicle: Vehicle = {
+                  id: a.vehicleId,
+                  name: a.friendlyName ?? "Shared Tesla",
+                  image: SHARED_VEHICLE_IMAGE,
+                  vin: a.vin ?? "",
+                  state: "",
+                };
+                return (
+                  <VehicleControlCard
+                    key={a.id}
+                    userId={userId}
+                    vehicle={vehicle}
+                    shared
+                    permissions={a.permissions}
+                    expiresAt={a.expiresAt}
+                  />
+                );
+              })}
+            </div>
+          </section>
+        )}
       </main>
     </div>
   );
