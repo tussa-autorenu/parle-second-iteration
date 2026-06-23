@@ -298,6 +298,47 @@ export type TeslaStatus = {
   updatedAt?: string;
 };
 
+/**
+ * Vehicle shape consumed by `Dashboard.tsx` / `VehicleControlCard.tsx` via the
+ * flat `getVehicles()` helper. Display-ready (always has a name + image).
+ */
+export type Vehicle = {
+  id: string;
+  name: string;
+  image: string;
+  vin: string;
+  state: string;
+};
+
+/** Live status returned by `GET /vehicles/:id/status` (flat `getVehicleStatus`). */
+export type VehicleStatus = {
+  /** Lowercased Tesla online state ("online" | "asleep" | "offline" | …). */
+  state: string;
+  batteryLevel: number | null;
+  isLocked: boolean | null;
+  chargingState: string | null;
+  rangeKm: number | null;
+  insideTemp?: number | null;
+  outsideTemp?: number | null;
+  lastSeenAt?: string | null;
+  lastLat?: number | null;
+  lastLng?: number | null;
+};
+
+/** One row from `GET /logs/commands` (the backend `CommandLog` model). */
+export type CommandLogEntry = {
+  id: string;
+  command: string;
+  result: string;
+  errorMessage: string | null;
+  createdAt: string;
+  requestId?: string;
+  vehicleId?: string;
+  triggeredBy?: string;
+  errorReason?: string | null;
+  teslaStatus?: number | null;
+};
+
 /** A ride-share code for one of the owner's vehicles. */
 export type ShareCode = {
   code: string;
@@ -590,3 +631,139 @@ export const api = {
 };
 
 export type Api = typeof api;
+
+// ── Flat named exports ────────────────────────────────────
+// `Dashboard.tsx` and `VehicleControlCard.tsx` import these functions directly.
+// Account-scoped calls take `(userId)`; vehicle-scoped calls take
+// `(userId, vehicleId)`. Endpoints match the backend the `api` object uses
+// (Tesla auth lives under `/auth/tesla/*`).
+
+/** Build a display-ready Vehicle from a raw `GET /vehicles` row. */
+function toVehicle(raw: RawVehicle, index: number): Vehicle {
+  const id = String(raw.id ?? raw.teslaVehicleId ?? raw.vin ?? `vehicle-${index}`);
+  const vin = String(raw.vin ?? "");
+  const friendly = raw.friendlyName ?? raw.displayName ?? raw.name ?? null;
+  const decoded = decodeVin(vin);
+  return {
+    id,
+    vin,
+    name: friendly ?? decoded.model ?? "Tesla",
+    image: pickFallbackThumbnail(id),
+    state: raw.state ? String(raw.state).toLowerCase() : "",
+  };
+}
+
+/** GET /auth/tesla/status — is this user's Tesla account linked? */
+export function getTeslaStatus(userId: string): Promise<TeslaStatus> {
+  return request<TeslaStatus>("/auth/tesla/status", { userId });
+}
+
+/** POST /auth/tesla/disconnect — remove the user's stored Tesla tokens. */
+export function disconnectTesla(userId: string): Promise<unknown> {
+  return request("/auth/tesla/disconnect", { method: "POST", userId });
+}
+
+/** GET /vehicles — the user's vehicles (owned + temporarily shared). */
+export async function getVehicles(userId: string): Promise<Vehicle[]> {
+  const data = await request<RawVehicle[] | { vehicles?: RawVehicle[] }>(
+    "/vehicles",
+    { userId },
+  );
+  return unwrapVehicleList(data).map((raw, i) => toVehicle(raw, i));
+}
+
+/** GET /vehicles/:id/status — live status for a single vehicle. */
+export function getVehicleStatus(
+  userId: string,
+  vehicleId: string,
+): Promise<VehicleStatus> {
+  return request<VehicleStatus>(
+    `/vehicles/${encodeURIComponent(vehicleId)}/status`,
+    { userId },
+  );
+}
+
+/** GET /logs/commands?vehicleId=…&limit=… — recent command logs. */
+export async function getVehicleLogs(
+  userId: string,
+  vehicleId: string,
+  limit = 50,
+): Promise<CommandLogEntry[]> {
+  const params = new URLSearchParams({ vehicleId, limit: String(limit) });
+  const data = await request<{ logs?: CommandLogEntry[] } | CommandLogEntry[]>(
+    `/logs/commands?${params.toString()}`,
+    { userId },
+  );
+  return Array.isArray(data) ? data : data?.logs ?? [];
+}
+
+/** POST /vehicles/:id/wake */
+export function wakeVehicle(userId: string, vehicleId: string): Promise<unknown> {
+  return api.wakeVehicle(vehicleId, userId);
+}
+
+/** POST /vehicles/:id/lock */
+export function lockVehicle(userId: string, vehicleId: string): Promise<unknown> {
+  return api.lockVehicle(vehicleId, userId);
+}
+
+/** POST /vehicles/:id/unlock */
+export function unlockVehicle(
+  userId: string,
+  vehicleId: string,
+): Promise<unknown> {
+  return api.unlockVehicle(vehicleId, userId);
+}
+
+/** POST /vehicles/:id/enable-drive */
+export function enableDriveVehicle(
+  userId: string,
+  vehicleId: string,
+): Promise<unknown> {
+  return api.enableDrive(vehicleId, userId);
+}
+
+/** POST /vehicles/:id/ready — wake → unlock → enable-drive. */
+export function readyVehicle(
+  userId: string,
+  vehicleId: string,
+): Promise<unknown> {
+  return api.readyVehicle(vehicleId, userId);
+}
+
+// Flat aliases for the temporary vehicle sharing API (also on the `api` object).
+
+/** GET /share/code */
+export function getShareCode(userId: string, vehicleId: string): Promise<ShareCode> {
+  return api.getShareCode(userId, vehicleId);
+}
+
+/** POST /share/code/regenerate */
+export function regenerateShareCode(
+  userId: string,
+  vehicleId: string,
+): Promise<ShareCode> {
+  return api.regenerateShareCode(userId, vehicleId);
+}
+
+/** POST /share/redeem */
+export function redeemShareCode(
+  userId: string,
+  code: string,
+  durationMinutes: number,
+): Promise<TemporaryAccess> {
+  return api.redeemShareCode(userId, code, durationMinutes);
+}
+
+/** GET /share/access */
+export function getTemporaryAccess(userId: string): Promise<ShareAccess> {
+  return api.getTemporaryAccess(userId);
+}
+
+/** POST /share/revoke */
+export function revokeTemporaryAccess(
+  userId: string,
+  accessId: string,
+): Promise<unknown> {
+  return api.revokeTemporaryAccess(userId, accessId);
+}
