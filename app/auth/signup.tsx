@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { useAuth } from '@/lib/auth';
+import { getAuthErrorMessage, useAuth } from '@/lib/auth';
 import { ParleLogoFull } from '@/src/components/ParleLogoFull';
 
 export default function SignUpScreen() {
@@ -61,12 +61,8 @@ export default function SignUpScreen() {
       }
       router.replace('/auth/login' as never);
     } catch (err) {
-      const message = err instanceof Error ? err.message.toLowerCase() : '';
-      if (message.includes('already registered') || message.includes('already exists')) {
-        setError('An account with this email already exists. Try signing in.');
-      } else {
-        setError(err instanceof Error ? err.message : 'Could not create account.');
-      }
+      console.warn('[SignUp] sign-up failed:', err);
+      setError(getAuthErrorMessage(err));
     } finally {
       setIsSubmitting(false);
     }

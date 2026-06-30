@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { useAuth } from '@/lib/auth';
+import { getAuthErrorMessage, useAuth } from '@/lib/auth';
 import { ParleLogoFull } from '@/src/components/ParleLogoFull';
 
 export default function LoginScreen() {
@@ -35,14 +35,8 @@ export default function LoginScreen() {
       // Auth state listener flips index to the Flow; replace to home.
       router.replace('/' as never);
     } catch (err) {
-      const message = err instanceof Error ? err.message.toLowerCase() : '';
-      if (message.includes('invalid login') || message.includes('invalid_credentials')) {
-        setError('Incorrect email or password. Please try again.');
-      } else if (message.includes('email not confirmed')) {
-        setError('Please confirm your email before signing in.');
-      } else {
-        setError(err instanceof Error ? err.message : 'Could not sign in.');
-      }
+      console.warn('[Login] sign-in failed:', err);
+      setError(getAuthErrorMessage(err));
     } finally {
       setIsSubmitting(false);
     }

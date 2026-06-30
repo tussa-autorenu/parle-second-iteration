@@ -8,11 +8,26 @@ const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 
 export const isSupabaseConfigured = !!supabaseUrl && !!supabaseAnonKey;
 
+// Safe diagnostics — confirms what Expo actually loaded from .env WITHOUT
+// leaking secrets (URL is public; only a short prefix of the key is shown).
+console.log('[Supabase] env check', {
+  urlExists: !!supabaseUrl,
+  urlPreview: supabaseUrl ? `${supabaseUrl.slice(0, 20)}…` : '(missing)',
+  anonKeyExists: !!supabaseAnonKey,
+  anonKeyPreview: supabaseAnonKey ? `${supabaseAnonKey.slice(0, 10)}…` : '(missing)',
+});
+
 if (!isSupabaseConfigured) {
   console.warn(
     '[Supabase] Missing EXPO_PUBLIC_SUPABASE_URL or EXPO_PUBLIC_SUPABASE_ANON_KEY. ' +
       'Add them to a .env file (see .env.example) and restart with `npx expo start -c`. ' +
       'Until then, login and the fleet feed will show an error state instead of crashing.'
+  );
+} else if (supabaseUrl?.includes('your-project') || supabaseUrl?.includes('placeholder')) {
+  // Guards the exact bug we hit: a real key but the example URL left in .env.
+  console.warn(
+    `[Supabase] EXPO_PUBLIC_SUPABASE_URL still looks like a placeholder (${supabaseUrl}). ` +
+      'Set it to your real project URL (e.g. https://<ref>.supabase.co) and restart with `npx expo start -c`.'
   );
 }
 

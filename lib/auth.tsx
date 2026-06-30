@@ -9,7 +9,55 @@ import {
   type ReactNode,
 } from 'react';
 
-import { supabase } from './supabase';
+import { isSupabaseConfigured, supabase } from './supabase';
+
+/** Sentinel thrown before hitting the network when env vars are absent. */
+const NOT_CONFIGURED = 'SUPABASE_NOT_CONFIGURED';
+
+/**
+ * Turn any auth/network failure into a short, human-readable message so the
+ * login/signup screens never surface a raw "Failed to fetch".
+ */
+export function getAuthErrorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? '');
+  const msg = raw.toLowerCase();
+
+  if (msg.includes(NOT_CONFIGURED.toLowerCase())) {
+    return 'Supabase isn’t configured. Add EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY to your .env, then restart with `npx expo start -c`.';
+  }
+  if (
+    msg.includes('failed to fetch') ||
+    msg.includes('network request failed') ||
+    msg.includes('load failed') ||
+    msg.includes('networkerror') ||
+    msg.includes('fetch failed')
+  ) {
+    return 'Can’t reach Parlé right now. Check your connection and that your Supabase URL is correct, then try again.';
+  }
+  if (msg.includes('invalid login credentials') || msg.includes('invalid_credentials')) {
+    return 'Incorrect email or password. Please try again.';
+  }
+  if (msg.includes('user not found') || msg.includes('no user found')) {
+    return 'No account found for that email. Try signing up instead.';
+  }
+  if (msg.includes('email not confirmed')) {
+    return 'Please confirm your email from the link we sent, then sign in.';
+  }
+  if (
+    msg.includes('already registered') ||
+    msg.includes('already exists') ||
+    msg.includes('user already')
+  ) {
+    return 'An account with this email already exists. Try signing in.';
+  }
+  if (msg.includes('password should be at least') || msg.includes('weak password')) {
+    return 'Password is too weak. Use at least 8 characters.';
+  }
+  if (msg.includes('too many requests') || msg.includes('rate limit')) {
+    return 'Too many attempts. Please wait a moment and try again.';
+  }
+  return raw || 'Something went wrong. Please try again.';
+}
 
 type AuthContextValue = {
   session: Session | null;
@@ -71,6 +119,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signIn = useCallback(async (email: string, password: string) => {
+    if (!isSupabaseConfigured) throw new Error(NOT_CONFIGURED);
     const cleanEmail = email.trim().toLowerCase();
     const { data, error } = await supabase.auth.signInWithPassword({
       email: cleanEmail,
@@ -82,6 +131,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signUp = useCallback(async (email: string, password: string) => {
+    if (!isSupabaseConfigured) throw new Error(NOT_CONFIGURED);
     const cleanEmail = email.trim().toLowerCase();
     const { data, error } = await supabase.auth.signUp({
       email: cleanEmail,
