@@ -1,31 +1,35 @@
-import { Image } from 'expo-image';
+import { useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
   RefreshControl,
   ScrollView,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { Easing, FadeInUp } from 'react-native-reanimated';
 import { StatusBar } from 'expo-status-bar';
 
-import type { FleetStatus } from '@/lib/useAvailableFleet';
+import type { FleetStatus, RedeemResult } from '@/lib/useAvailableFleet';
 import type { Vehicle } from '@/src/data/vehicles';
-import { ParleLogoFull } from '@/src/components/ParleLogoFull';
+import { ParleLogo } from '@/src/components/ParleLogo';
 import { VehicleCard } from '@/src/components/VehicleCard';
 
 type Props = {
   vehicles: Vehicle[];
+  publicCount: number;
+  sharedCount: number;
   status: FleetStatus;
   error: string | null;
   isRefreshing: boolean;
   onRefresh: () => void;
+  onRedeemCode: (code: string) => Promise<RedeemResult>;
   onSelectVehicle: (id: string) => void;
-  /** Tapping the Parle logo resets the flow back to Loading. */
+  /** Tapping the Parlé logo resets the flow back to Loading. */
   onLogoTap: () => void;
-  /** Long-press the avatar to sign out. */
+  /** Long-press the logo to sign out. */
   onSignOut: () => void;
 };
 
@@ -36,19 +40,15 @@ const CARDS_START_DELAY_MS = HEADER_ENTRY_MS + HEADER_TO_CARDS_PAUSE_MS; // 750
 const CARD_ENTRY_MS = 300;
 const CARD_STAGGER_MS = 100;
 
-const avatarImage = require('../../assets/avatar.png');
-
 /**
  * SCENE 2 — Available Vehicles.
  *
- * Layout (Figma 166:260):
- *   • Header: Parle wordmark + "Available nearby · N" chip — left.
- *             Circular user avatar — right (long-press to sign out).
- *   • Body: vertical stack of live vehicle cards from Supabase
- *           (gap 16px, side padding 16px), with pull-to-refresh.
- *
- * Entry: header rises + fades in over 500ms → 250ms pause → cards stagger
- * in 100ms apart, 300ms each.
+ * Layout:
+ *   • Header: Parlé "P" mark + "PARLE" wordmark (regular weight), left-aligned.
+ *     Tap resets the flow; long-press signs out.
+ *   • Share-code entry: "Have a share code?" → input + Redeem (backend-wired).
+ *   • Body: live vehicle cards — shared-access vehicles + the public fleet from
+ *     Supabase — with pull-to-refresh.
  */
 export function VehicleListScene({
   vehicles,
@@ -56,6 +56,7 @@ export function VehicleListScene({
   error,
   isRefreshing,
   onRefresh,
+  onRedeemCode,
   onSelectVehicle,
   onLogoTap,
   onSignOut,
@@ -66,52 +67,32 @@ export function VehicleListScene({
 
       {/* ---- Header --------------------------------------------------- */}
       <Animated.View
-        className="flex-row items-start justify-between px-6 py-4"
+        className="px-6 pt-4 pb-2"
         entering={FadeInUp.duration(HEADER_ENTRY_MS).easing(
           Easing.out(Easing.cubic)
         )}
       >
-        <View className="gap-3" style={{ width: 165 }}>
-          <Pressable onPress={onLogoTap} hitSlop={8}>
-            <ParleLogoFull width={120} height={35} />
-          </Pressable>
-          <View className="flex-row items-center gap-2">
-            <Text
-              className="font-space-grotesk text-parle-desat-7"
-              style={{ fontSize: 16 }}
-            >
-              Available nearby
-            </Text>
-            {/* Count chip — small rounded square, light desat bg,
-                accent-primary number. */}
-            <View
-              className="items-center justify-center rounded-md bg-parle-desat-1 px-2"
-              style={{ height: 24 }}
-            >
-              <Text
-                className="font-space-grotesk-bold text-parle-logo"
-                style={{ fontSize: 13 }}
-              >
-                {vehicles.length}
-              </Text>
-            </View>
-          </View>
-        </View>
-
-        {/* Avatar — 48×48 circle, 2px desat-3 border. Long-press signs out. */}
+        {/* Parlé "P" mark + uppercase wordmark (regular weight). Tap resets the
+            flow; long-press signs out. */}
         <Pressable
+          onPress={onLogoTap}
           onLongPress={onSignOut}
-          delayLongPress={400}
-          className="rounded-full border-2 border-parle-desat-3 overflow-hidden"
-          style={{ width: 48, height: 48 }}
+          delayLongPress={600}
+          hitSlop={8}
+          className="flex-row items-center gap-2 self-start"
         >
-          <Image
-            source={avatarImage}
-            contentFit="cover"
-            style={{ width: '100%', height: '100%' }}
-          />
+          <ParleLogo width={31} height={30} />
+          <Text
+            className="font-space-grotesk text-parle-dark"
+            style={{ fontSize: 26, letterSpacing: 0.5 }}
+          >
+            PARLE
+          </Text>
         </Pressable>
       </Animated.View>
+
+      {/* ---- Share-code entry ---------------------------------------- */}
+      <ShareCodeSection onRedeemCode={onRedeemCode} />
 
       {/* ---- Body ----------------------------------------------------- */}
       <Body
@@ -123,6 +104,125 @@ export function VehicleListScene({
         onSelectVehicle={onSelectVehicle}
       />
     </SafeAreaView>
+  );
+}
+
+/**
+ * Collapsible "Have a share code?" entry. Wired to the backend redeem endpoint
+ * via `onRedeemCode`; shows readable success / error messages inline. Renter
+ * styling only — no Tesla controls, no owner dashboard affordances.
+ */
+function ShareCodeSection({
+  onRedeemCode,
+}: {
+  onRedeemCode: (code: string) => Promise<RedeemResult>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const handleRedeem = async () => {
+    if (busy || code.trim().length === 0) return;
+    setBusy(true);
+    setMessage(null);
+    const result = await onRedeemCode(code);
+    setMessage({ ok: result.ok, text: result.message });
+    if (result.ok) setCode('');
+    setBusy(false);
+  };
+
+  return (
+    <View className="px-4 pb-2">
+      {!open ? (
+        <Pressable
+          onPress={() => setOpen(true)}
+          className="rounded-2xl border border-parle-desat-3 bg-parle-desat-0 flex-row items-center justify-between px-4"
+          style={{ height: 48 }}
+        >
+          <Text
+            className="font-space-grotesk-medium text-parle-dark"
+            style={{ fontSize: 14 }}
+          >
+            Have a share code?
+          </Text>
+          <Text
+            className="font-space-grotesk-bold text-parle-logo"
+            style={{ fontSize: 14 }}
+          >
+            Enter →
+          </Text>
+        </Pressable>
+      ) : (
+        <View className="rounded-2xl border border-parle-desat-3 bg-parle-desat-0 px-4 py-3 gap-2">
+          <View className="flex-row items-center justify-between">
+            <Text
+              className="font-space-grotesk-medium text-parle-dark"
+              style={{ fontSize: 14 }}
+            >
+              Enter your share code
+            </Text>
+            <Pressable onPress={() => setOpen(false)} hitSlop={8}>
+              <Text
+                className="font-space-grotesk text-parle-desat-7"
+                style={{ fontSize: 13 }}
+              >
+                Cancel
+              </Text>
+            </Pressable>
+          </View>
+
+          <View className="flex-row items-center gap-2">
+            <TextInput
+              className="flex-1 rounded-xl border border-parle-desat-3 bg-white px-3 font-space-grotesk text-parle-dark"
+              style={{ height: 46, fontSize: 15 }}
+              placeholder="e.g. ABC123"
+              placeholderTextColor="#7a757f"
+              value={code}
+              onChangeText={setCode}
+              autoCapitalize="characters"
+              autoCorrect={false}
+              editable={!busy}
+              onSubmitEditing={handleRedeem}
+              returnKeyType="go"
+            />
+            <Pressable
+              onPress={handleRedeem}
+              disabled={busy || code.trim().length === 0}
+              className="bg-parle-logo rounded-xl items-center justify-center px-4"
+              style={{
+                height: 46,
+                opacity: busy || code.trim().length === 0 ? 0.5 : 1,
+              }}
+            >
+              {busy ? (
+                <ActivityIndicator color="#ffffff" />
+              ) : (
+                <Text
+                  className="font-space-grotesk-bold text-white"
+                  style={{ fontSize: 14 }}
+                >
+                  Redeem
+                </Text>
+              )}
+            </Pressable>
+          </View>
+
+          {message ? (
+            <Text
+              className="font-space-grotesk"
+              style={{
+                fontSize: 13,
+                lineHeight: 18,
+                color: message.ok ? '#2E9C7F' : '#B91C1C',
+              }}
+            >
+              {message.text}
+            </Text>
+          ) : null}
+        </View>
+      )}
+    </View>
   );
 }
 
@@ -222,8 +322,8 @@ function Body({
             className="font-space-grotesk text-parle-desat-7 text-center"
             style={{ fontSize: 14, lineHeight: 20 }}
           >
-            Pull to refresh — new vehicles appear here the moment an owner makes
-            one available.
+            Pull to refresh — available vehicles appear here, or enter a share
+            code above for direct access.
           </Text>
         </View>
       </ScrollView>

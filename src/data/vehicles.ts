@@ -10,8 +10,20 @@
 
 export type VehicleColor = 'White' | 'Red' | 'Black';
 
+/**
+ * Where a vehicle came from:
+ *   • 'public' → public.fleet_available_vehicles (is_available = true)
+ *   • 'shared' → a vehicle the renter unlocked via a share code (backend
+ *                /share/access). Rendered with a "Shared access" label.
+ */
+export type VehicleSource = 'public' | 'shared';
+
 export type Vehicle = {
   id: string;
+  /** Defaults to 'public'. */
+  source: VehicleSource;
+  /** ISO expiry of temporary shared access (shared vehicles only). */
+  sharedExpiresAt?: string | null;
   /** Display title — real display_name / model, falling back to "Tesla Vehicle". */
   model: string;
   /** One of the three exterior colors we have image assets for. */

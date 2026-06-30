@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import { CircleCheck, X } from 'lucide-react-native';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, {
   Easing,
@@ -14,7 +14,6 @@ import Animated, {
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 
-import { getAvailableVehicleById } from '@/lib/fleetAvailableVehicles';
 import type { Vehicle, VehicleColor } from '@/src/data/vehicles';
 
 // Same image lookup as on the list card so the visual is continuous.
@@ -48,7 +47,7 @@ const CTA_DELAY = 300;
 const FOUR_HOUR_FEE_MULTIPLIER = 1.21;
 
 type Props = {
-  vehicleId: string | null;
+  vehicle: Vehicle | null;
   onBack: () => void;
   onStartRide: () => void;
 };
@@ -56,18 +55,14 @@ type Props = {
 /**
  * SCENE 3 — Vehicle Detail.
  *
- * Fetches the selected vehicle by id from Supabase and renders it in the
- * original prototype's detail layout (hero image, price card, spec tiles,
- * included features + owner card, "Unlock & Start Ride" CTA).
+ * Renders the live vehicle the renter selected (a public fleet row from
+ * Supabase or a share-code vehicle from the backend) in the original
+ * prototype's detail layout. No owner/fleet-management controls.
  *
  * Entry: image scales 0.5×→1.0× from center while the surrounding content
  * fades + slides up, staggered top to bottom around the image.
  */
-export function VehicleDetailScene({ vehicleId, onBack, onStartRide }: Props) {
-  const [vehicle, setVehicle] = useState<Vehicle | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
+export function VehicleDetailScene({ vehicle, onBack, onStartRide }: Props) {
   // Local guard so a frantic double-tap on the X doesn't fire the close
   // animation twice (which would call `onBack` twice and break state).
   const [isClosing, setIsClosing] = useState(false);
@@ -77,42 +72,11 @@ export function VehicleDetailScene({ vehicleId, onBack, onStartRide }: Props) {
   const wrapperTranslateY = useSharedValue(0);
 
   useEffect(() => {
-    let active = true;
-
-    if (!vehicleId) {
-      setIsLoading(false);
-      setLoadError('No vehicle selected.');
-      return;
-    }
-
-    setIsLoading(true);
-    setLoadError(null);
-
-    getAvailableVehicleById(vehicleId)
-      .then((row) => {
-        if (!active) return;
-        setVehicle(row);
-        if (!row) setLoadError('This vehicle is no longer available.');
-      })
-      .catch((err) => {
-        if (!active) return;
-        setLoadError(err instanceof Error ? err.message : 'Could not load vehicle.');
-      })
-      .finally(() => {
-        if (active) setIsLoading(false);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [vehicleId]);
-
-  useEffect(() => {
     imageScale.value = withTiming(1, {
       duration: IMAGE_ENTRY_MS,
       easing: Easing.out(Easing.cubic),
     });
-  }, [imageScale, vehicle]);
+  }, [imageScale]);
 
   const imageAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: imageScale.value }],
@@ -148,30 +112,13 @@ export function VehicleDetailScene({ vehicleId, onBack, onStartRide }: Props) {
     });
   };
 
-  if (isLoading) {
-    return (
-      <SafeAreaView
-        className="flex-1 items-center justify-center bg-white px-6"
-        edges={['top', 'bottom']}
-      >
-        <StatusBar style="dark" />
-        <ActivityIndicator color="#911cff" />
-        <Text
-          className="font-space-grotesk text-parle-desat-7 mt-3"
-          style={{ fontSize: 14 }}
-        >
-          Loading vehicle…
-        </Text>
-      </SafeAreaView>
-    );
-  }
-
-  // Defensive — keeps the screen recoverable if the row is gone or errored.
+  // Defensive — keeps the screen recoverable if we somehow arrive with no
+  // selected vehicle.
   if (!vehicle) {
     return (
       <SafeAreaView className="flex-1 items-center justify-center bg-white px-6">
         <Text className="font-space-grotesk text-parle-desat-7 text-center">
-          {loadError ?? 'No vehicle selected.'}
+          This vehicle is no longer available.
         </Text>
         <Pressable onPress={onBack} className="mt-4">
           <Text className="font-space-grotesk-bold text-parle-logo">
@@ -182,10 +129,13 @@ export function VehicleDetailScene({ vehicleId, onBack, onStartRide }: Props) {
     );
   }
 
-  const distanceLabel =
-    vehicle.distanceMi == null
-      ? 'Nearby'
-      : `${vehicle.distanceMi.toFixed(1)} mi away`;
+  const isShared = vehicle.source === 'shared';
+
+  const subtitle = isShared
+    ? 'Shared access'
+    : vehicle.distanceMi == null
+      ? `${vehicle.color}  ·  Nearby`
+      : `${vehicle.color}  ·  ${vehicle.distanceMi.toFixed(1)} mi away`;
 
   const fourHourEstimate =
     vehicle.hourlyRate == null
@@ -250,41 +200,43 @@ export function VehicleDetailScene({ vehicleId, onBack, onStartRide }: Props) {
                 className="font-space-grotesk text-parle-desat-7"
                 style={{ fontSize: 16, lineHeight: 16 }}
               >
-                {vehicle.color}  ·  {distanceLabel}
+                {subtitle}
               </Text>
             </Animated.View>
 
-            {/* Price card */}
-            <Animated.View
-              className="rounded-2xl border border-parle-desat-3 bg-parle-desat-0 flex-row items-center justify-between px-6"
-              style={{ height: 56 }}
-              entering={FadeInUp.duration(ROW_ENTRY_MS)
-                .delay(PRICE_DELAY)
-                .easing(Easing.out(Easing.cubic))}
-            >
-              <View className="flex-row items-center gap-1.5">
-                <Text
-                  className="font-space-grotesk-bold text-parle-dark"
-                  style={{ fontSize: 24 }}
-                >
-                  {vehicle.hourlyRate == null ? '$--' : `$${vehicle.hourlyRate}`}
-                </Text>
+            {/* Price card — only when we have a rate (public fleet). */}
+            {vehicle.hourlyRate != null && (
+              <Animated.View
+                className="rounded-2xl border border-parle-desat-3 bg-parle-desat-0 flex-row items-center justify-between px-6"
+                style={{ height: 56 }}
+                entering={FadeInUp.duration(ROW_ENTRY_MS)
+                  .delay(PRICE_DELAY)
+                  .easing(Easing.out(Easing.cubic))}
+              >
+                <View className="flex-row items-center gap-1.5">
+                  <Text
+                    className="font-space-grotesk-bold text-parle-dark"
+                    style={{ fontSize: 24 }}
+                  >
+                    ${vehicle.hourlyRate}
+                  </Text>
+                  <Text
+                    className="font-space-mono text-parle-desat-7"
+                    style={{ fontSize: 12 }}
+                  >
+                    /hour
+                  </Text>
+                </View>
                 <Text
                   className="font-space-mono text-parle-desat-7"
                   style={{ fontSize: 12 }}
                 >
-                  /hour
+                  {fourHourEstimate == null
+                    ? '4 hour Est: —'
+                    : `4 hour Est: $${fourHourEstimate}`}
                 </Text>
-              </View>
-              <Text
-                className="font-space-mono text-parle-desat-7"
-                style={{ fontSize: 12 }}
-              >
-                {fourHourEstimate == null
-                  ? '4 hour Est: —'
-                  : `4 hour Est: $${fourHourEstimate}`}
-              </Text>
-            </Animated.View>
+              </Animated.View>
+            )}
 
             {/* Spec tiles row */}
             <Animated.View
@@ -311,25 +263,34 @@ export function VehicleDetailScene({ vehicleId, onBack, onStartRide }: Props) {
                 .delay(FEATURES_DELAY)
                 .easing(Easing.out(Easing.cubic))}
             >
-              {/* Features list */}
+              {/* Features list (standard Tesla amenities; empty for shared). */}
               <View className="gap-2" style={{ width: 187 }}>
                 <Text
                   className="font-space-grotesk-bold text-parle-dark"
                   style={{ fontSize: 16, letterSpacing: -0.32 }}
                 >
-                  Included Features
+                  {isShared ? 'Access' : 'Included Features'}
                 </Text>
-                {vehicle.features.map((feature) => (
-                  <View key={feature} className="flex-row items-center gap-2">
-                    <CircleCheck size={16} color="#911cff" strokeWidth={2} />
-                    <Text
-                      className="font-space-grotesk text-parle-desat-7"
-                      style={{ fontSize: 14, lineHeight: 14 }}
-                    >
-                      {feature}
-                    </Text>
-                  </View>
-                ))}
+                {isShared ? (
+                  <Text
+                    className="font-space-grotesk text-parle-desat-7"
+                    style={{ fontSize: 14, lineHeight: 18 }}
+                  >
+                    Shared with you via a direct access code.
+                  </Text>
+                ) : (
+                  vehicle.features.map((feature) => (
+                    <View key={feature} className="flex-row items-center gap-2">
+                      <CircleCheck size={16} color="#911cff" strokeWidth={2} />
+                      <Text
+                        className="font-space-grotesk text-parle-desat-7"
+                        style={{ fontSize: 14, lineHeight: 14 }}
+                      >
+                        {feature}
+                      </Text>
+                    </View>
+                  ))
+                )}
               </View>
 
               {/* Owner card */}

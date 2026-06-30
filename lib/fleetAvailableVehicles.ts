@@ -43,10 +43,21 @@ export async function getAvailableFleetVehicles(): Promise<FleetAvailableVehicle
     .order('created_at', { ascending: false });
 
   if (error) {
+    console.warn('[Fleet] fleet_available_vehicles query failed:', error.message);
     throw new Error(error.message);
   }
 
-  return (data ?? []) as FleetAvailableVehicle[];
+  const rows = (data ?? []) as FleetAvailableVehicle[];
+  console.log(`[Fleet] fleet_available_vehicles returned ${rows.length} row(s).`);
+  if (rows.length === 0) {
+    console.log(
+      '[Fleet] No rows returned from fleet_available_vehicles. ' +
+        'Either no owner has published a vehicle (is_available = true) yet, ' +
+        'or RLS is blocking the read for this authenticated user.'
+    );
+  }
+
+  return rows;
 }
 
 /**
@@ -96,6 +107,7 @@ export function getVehicleColor(row: FleetAvailableVehicle): VehicleColor {
 export function mapFleetVehicleToVehicle(row: FleetAvailableVehicle): Vehicle {
   return {
     id: row.id,
+    source: 'public',
     model: getVehicleTitle(row),
     color: getVehicleColor(row),
     distanceMi: row.distance_miles == null ? null : Number(row.distance_miles),

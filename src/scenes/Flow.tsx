@@ -21,7 +21,16 @@ import { VehicleListScene } from './VehicleListScene';
 export function Flow() {
   const [state, dispatch] = useReducer(flowReducer, INITIAL_FLOW);
   const { signOut } = useAuth();
-  const { vehicles, status, error, isRefreshing, refresh } = useAvailableFleet();
+  const {
+    vehicles,
+    publicCount,
+    sharedCount,
+    status,
+    error,
+    isRefreshing,
+    refresh,
+    redeem,
+  } = useAvailableFleet();
 
   const selectedVehicle =
     vehicles.find((vehicle) => vehicle.id === state.selectedVehicleId) ?? null;
@@ -37,10 +46,13 @@ export function Flow() {
       {state.scene === 'vehicleList' && (
         <VehicleListScene
           vehicles={vehicles}
+          publicCount={publicCount}
+          sharedCount={sharedCount}
           status={status}
           error={error}
           isRefreshing={isRefreshing}
           onRefresh={refresh}
+          onRedeemCode={redeem}
           onSelectVehicle={(id) => dispatch({ type: 'VEHICLE_SELECTED', id })}
           onLogoTap={() => dispatch({ type: 'LOGO_TAPPED' })}
           onSignOut={signOut}
@@ -49,7 +61,7 @@ export function Flow() {
 
       {state.scene === 'vehicleDetail' && (
         <VehicleDetailScene
-          vehicleId={state.selectedVehicleId}
+          vehicle={selectedVehicle}
           onBack={() => dispatch({ type: 'BACK_TO_LIST' })}
           onStartRide={() => dispatch({ type: 'RIDE_STARTED' })}
         />

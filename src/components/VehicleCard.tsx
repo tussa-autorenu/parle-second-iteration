@@ -29,6 +29,7 @@ function distanceLabel(distanceMi: number | null): string {
  * (card sub-nodes 301:653 / 301:654 / 301:670).
  */
 export function VehicleCard({ vehicle, onPress }: Props) {
+  const isShared = vehicle.source === 'shared';
   return (
     <Pressable
       onPress={onPress}
@@ -110,12 +111,21 @@ export function VehicleCard({ vehicle, onPress }: Props) {
         className="flex-row items-center justify-between border-t border-parle-desat-3"
         style={{ height: 48 }}
       >
-        <Text
-          className="font-space-grotesk-medium text-parle-success"
-          style={{ fontSize: 13 }}
-        >
-          Available now
-        </Text>
+        {isShared ? (
+          <Text
+            className="font-space-grotesk-medium text-parle-logo"
+            style={{ fontSize: 13 }}
+          >
+            Shared access
+          </Text>
+        ) : (
+          <Text
+            className="font-space-grotesk-medium text-parle-success"
+            style={{ fontSize: 13 }}
+          >
+            Available now
+          </Text>
+        )}
         <Text
           className="font-space-grotesk-medium text-parle-dark"
           style={{ fontSize: 13 }}
