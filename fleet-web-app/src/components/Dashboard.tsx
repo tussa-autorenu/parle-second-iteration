@@ -27,6 +27,7 @@ import {
 } from "@/lib/api";
 import { VehicleControlCard } from "./VehicleControlCard";
 import { RedeemCodeForm } from "./RedeemCodeForm";
+import { syncSelectedFleetVehiclesToSupabase } from "@/lib/fleetAvailability";
 
 type Banner = { kind: "success" | "error"; text: string } | null;
 
@@ -34,6 +35,17 @@ const SHARED_VEHICLE_IMAGE = "/assets/vehicle_white_thumbnail@2x.png";
 
 function errorMessage(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
+}
+
+/** Surface ApiError / Supabase error messages without leaking internals. */
+function readErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) return err.message;
+  if (err instanceof Error && err.message) return err.message;
+  if (err && typeof err === "object" && "message" in err) {
+    const m = (err as { message?: unknown }).message;
+    if (typeof m === "string" && m) return m;
+  }
+  return fallback;
 }
 
 function fleetStorageKey(userId: string) {
@@ -75,6 +87,7 @@ export function Dashboard() {
 
   const [fleet, setFleet] = useState<Set<string>>(new Set());
   const [disconnecting, setDisconnecting] = useState(false);
+  const [savingFleet, setSavingFleet] = useState(false);
 
   const [access, setAccess] = useState<ShareAccess | null>(null);
   const [accessVersion, setAccessVersion] = useState(0);
@@ -188,6 +201,33 @@ export function Dashboard() {
       saveFleetSelection(userId, next);
       return next;
     });
+  }
+
+  // Publish the current selection to Supabase so the renter app can see the
+  // available cars. Selected → is_available true, unselected → false.
+  async function saveFleet() {
+    if (!userId || !vehicles || savingFleet) return;
+    setSavingFleet(true);
+    try {
+      await syncSelectedFleetVehiclesToSupabase({
+        ownerUserId: userId,
+        allVehicles: vehicles,
+        selectedVehicleIds: [...fleet],
+      });
+      setBanner({
+        kind: "success",
+        text: fleet.size
+          ? `Fleet saved. ${fleet.size} car${fleet.size === 1 ? "" : "s"} now visible to renters.`
+          : "Fleet saved. No cars are listed for renters right now.",
+      });
+    } catch (err) {
+      setBanner({
+        kind: "error",
+        text: readErrorMessage(err, "Could not save your fleet. Please try again."),
+      });
+    } finally {
+      setSavingFleet(false);
+    }
   }
 
   async function handleDisconnect() {
@@ -451,6 +491,24 @@ export function Dashboard() {
                   );
                 })}
               </ul>
+            )}
+
+            {vehicles !== null && vehicles.length > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-desat-2 bg-white p-4">
+                <p className="text-sm text-desat-7">
+                  {fleet.size === 0
+                    ? "No cars selected — saving will hide your cars from renters."
+                    : `${fleet.size} car${fleet.size === 1 ? "" : "s"} selected. Save to make them visible to renters.`}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void saveFleet()}
+                  disabled={savingFleet}
+                  className="rounded-xl bg-accent-primary px-5 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {savingFleet ? "Saving…" : "Save fleet"}
+                </button>
+              </div>
             )}
           </section>
         )}
