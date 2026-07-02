@@ -37,14 +37,9 @@ const CLOSE_ENTRY_MS = 200;
 // Each row of detail content fades in + slides up, staggered top → bottom.
 const ROW_ENTRY_MS = 300;
 const TITLE_DELAY = 100;
-const PRICE_DELAY = 150;
 const SPECS_DELAY = 200;
 const FEATURES_DELAY = 250;
 const CTA_DELAY = 300;
-
-// Total estimate factor — folds in tax + service fees so the 4-hour estimate
-// reads as realistic ($24/hr × 4h × 1.21 ≈ $116).
-const FOUR_HOUR_FEE_MULTIPLIER = 1.21;
 
 type Props = {
   vehicle: Vehicle | null;
@@ -137,11 +132,6 @@ export function VehicleDetailScene({ vehicle, onBack, onStartRide }: Props) {
       ? `${vehicle.color}  ·  Nearby`
       : `${vehicle.color}  ·  ${vehicle.distanceMi.toFixed(1)} mi away`;
 
-  const fourHourEstimate =
-    vehicle.hourlyRate == null
-      ? null
-      : Math.round(vehicle.hourlyRate * 4 * FOUR_HOUR_FEE_MULTIPLIER);
-
   return (
     <SafeAreaView className="flex-1 bg-white" edges={['top', 'bottom']}>
       <StatusBar style="dark" />
@@ -203,40 +193,6 @@ export function VehicleDetailScene({ vehicle, onBack, onStartRide }: Props) {
                 {subtitle}
               </Text>
             </Animated.View>
-
-            {/* Price card — only when we have a rate (public fleet). */}
-            {vehicle.hourlyRate != null && (
-              <Animated.View
-                className="rounded-2xl border border-parle-desat-3 bg-parle-desat-0 flex-row items-center justify-between px-6"
-                style={{ height: 56 }}
-                entering={FadeInUp.duration(ROW_ENTRY_MS)
-                  .delay(PRICE_DELAY)
-                  .easing(Easing.out(Easing.cubic))}
-              >
-                <View className="flex-row items-center gap-1.5">
-                  <Text
-                    className="font-space-grotesk-bold text-parle-dark"
-                    style={{ fontSize: 24 }}
-                  >
-                    ${vehicle.hourlyRate}
-                  </Text>
-                  <Text
-                    className="font-space-mono text-parle-desat-7"
-                    style={{ fontSize: 12 }}
-                  >
-                    /hour
-                  </Text>
-                </View>
-                <Text
-                  className="font-space-mono text-parle-desat-7"
-                  style={{ fontSize: 12 }}
-                >
-                  {fourHourEstimate == null
-                    ? '4 hour Est: —'
-                    : `4 hour Est: $${fourHourEstimate}`}
-                </Text>
-              </Animated.View>
-            )}
 
             {/* Spec tiles row */}
             <Animated.View

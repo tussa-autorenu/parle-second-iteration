@@ -43,17 +43,24 @@ export async function getAvailableFleetVehicles(): Promise<FleetAvailableVehicle
     .order('created_at', { ascending: false });
 
   if (error) {
-    console.warn('[Fleet] fleet_available_vehicles query failed:', error.message);
+    // Log the exact Supabase table error (message/code/details/hint) so native
+    // failures are diagnosable. No secrets are included in these fields.
+    console.warn('[Fleet] fleet_available_vehicles query error:', {
+      message: error.message,
+      code: error.code,
+      details: error.details,
+      hint: error.hint,
+    });
     throw new Error(error.message);
   }
 
   const rows = (data ?? []) as FleetAvailableVehicle[];
-  console.log(`[Fleet] fleet_available_vehicles returned ${rows.length} row(s).`);
+  console.log(`[Fleet] fleet_available_vehicles count: ${rows.length}`);
   if (rows.length === 0) {
     console.log(
       '[Fleet] No rows returned from fleet_available_vehicles. ' +
         'Either no owner has published a vehicle (is_available = true) yet, ' +
-        'or RLS is blocking the read for this authenticated user.'
+        'or RLS is blocking the read for this (un)authenticated user.'
     );
   }
 
