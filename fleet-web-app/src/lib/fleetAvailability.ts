@@ -78,10 +78,77 @@ function toRow(
   };
 }
 
+const TABLE = "fleet_available_vehicles";
+
+type SupabaseErrorLike = { message?: string; code?: string };
+
+/**
+ * True when the DB rejects `ON CONFLICT (source_vehicle_id)` because the unique
+ * index is partial (`WHERE source_vehicle_id IS NOT NULL`) — Postgres error
+ * 42P10 "no unique or exclusion constraint matching the ON CONFLICT". We then
+ * fall back to a manual insert/update reconcile so the sync still works.
+ */
+function isNoConflictConstraintError(error: SupabaseErrorLike | null): boolean {
+  if (!error) return false;
+  if (error.code === "42P10") return true;
+  const msg = (error.message ?? "").toLowerCase();
+  return msg.includes("no unique or exclusion constraint");
+}
+
+/**
+ * Fallback path when `onConflict` can't be used: look up existing rows for this
+ * owner by `source_vehicle_id`, insert the new ones, and update the rest by
+ * primary key (`id`), which always has a usable unique constraint.
+ */
+async function reconcileWithoutOnConflict(
+  rows: FleetAvailableVehicleInsert[],
+  ownerUserId: string,
+): Promise<void> {
+  if (!supabase) throw new Error("Supabase isn’t configured.");
+  const sourceIds = rows.map((r) => r.source_vehicle_id);
+
+  const { data: existing, error: selectError } = await supabase
+    .from(TABLE)
+    .select("id, source_vehicle_id")
+    .eq("owner_user_id", ownerUserId)
+    .in("source_vehicle_id", sourceIds);
+  if (selectError) throw selectError;
+
+  const idBySource = new Map<string, string>(
+    (existing ?? []).map((r) => [
+      String((r as { source_vehicle_id: string }).source_vehicle_id),
+      String((r as { id: string }).id),
+    ]),
+  );
+
+  const toInsert = rows.filter((r) => !idBySource.has(r.source_vehicle_id));
+  const toUpdate = rows
+    .filter((r) => idBySource.has(r.source_vehicle_id))
+    .map((r) => ({ ...r, id: idBySource.get(r.source_vehicle_id) as string }));
+
+  if (toInsert.length) {
+    const { error } = await supabase.from(TABLE).insert(toInsert);
+    if (error) throw error;
+  }
+  if (toUpdate.length) {
+    const { error } = await supabase
+      .from(TABLE)
+      .upsert(toUpdate, { onConflict: "id" });
+    if (error) throw error;
+  }
+
+  console.log("[fleetAvailability] reconciled via insert/update fallback", {
+    insertedCount: toInsert.length,
+    updatedCount: toUpdate.length,
+  });
+}
+
 /**
  * Upsert every owned vehicle into `fleet_available_vehicles`, flagging the
  * selected ones as available and the rest as unavailable. Conflicts resolve on
  * `source_vehicle_id` (the web app's vehicle id), so re-saving updates in place.
+ * If the DB's unique index is partial (can't be an ON CONFLICT target), it
+ * automatically falls back to a manual insert/update reconcile.
  *
  * Throws on a Supabase error so callers can surface a message in the UI.
  */
@@ -92,6 +159,13 @@ export async function syncSelectedFleetVehiclesToSupabase(params: {
 }): Promise<void> {
   const { ownerUserId, allVehicles, selectedVehicleIds } = params;
 
+  // Safe diagnostics only — never tokens, keys, or vehicle PII.
+  console.log("[fleetAvailability] sync start", {
+    ownerUserIdPresent: Boolean(ownerUserId),
+    loadedVehicleCount: allVehicles.length,
+    selectedVehicleCount: selectedVehicleIds.length,
+  });
+
   if (!supabase) {
     throw new Error(
       "Supabase isn’t configured, so the fleet could not be published.",
@@ -100,27 +174,51 @@ export async function syncSelectedFleetVehiclesToSupabase(params: {
   if (!ownerUserId) {
     throw new Error("Missing owner user id; cannot publish fleet.");
   }
-  if (allVehicles.length === 0) return;
+  if (allVehicles.length === 0) {
+    console.log("[fleetAvailability] no vehicles loaded — nothing to sync");
+    return;
+  }
 
-  const selected = new Set(selectedVehicleIds);
-  const rows = allVehicles.map((v) => toRow(v, ownerUserId, selected.has(v.id)));
-  const selectedCount = rows.filter((r) => r.is_available).length;
+  const selected = new Set(selectedVehicleIds.map(String));
+  const rows = allVehicles.map((v) =>
+    toRow(v, ownerUserId, selected.has(String(v.id))),
+  );
+  const availableCount = rows.filter((r) => r.is_available).length;
+
+  console.log("[fleetAvailability] upserting rows", {
+    upsertRowCount: rows.length,
+    availableCount,
+  });
 
   const { error } = await supabase
-    .from("fleet_available_vehicles")
+    .from(TABLE)
     .upsert(rows, { onConflict: "source_vehicle_id" });
 
-  // Log safe counts only — never tokens, keys, or vehicle PII.
+  if (error && isNoConflictConstraintError(error)) {
+    console.warn(
+      "[fleetAvailability] onConflict unavailable (partial index) — using fallback",
+      { code: error.code ?? null },
+    );
+    await reconcileWithoutOnConflict(rows, ownerUserId);
+    console.log("[fleetAvailability] sync success (fallback)", {
+      upsertRowCount: rows.length,
+      availableCount,
+    });
+    return;
+  }
+
   if (error) {
-    console.error("[fleetAvailability] upsert failed", {
-      vehicleCount: rows.length,
-      selectedCount,
+    console.error("[fleetAvailability] upsert error", {
+      code: error.code ?? null,
+      message: error.message ?? "unknown",
+      upsertRowCount: rows.length,
+      availableCount,
     });
     throw error;
   }
 
-  console.log("[fleetAvailability] synced fleet availability", {
-    vehicleCount: rows.length,
-    selectedCount,
+  console.log("[fleetAvailability] sync success", {
+    upsertRowCount: rows.length,
+    availableCount,
   });
 }
