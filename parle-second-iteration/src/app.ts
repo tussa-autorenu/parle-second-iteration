@@ -72,6 +72,11 @@ export async function buildApp() {
   // Service-to-service auth (x-parle-api-key)
   await app.register(authPlugin);
 
+  // Central error handler — MUST be set before routes are registered so the
+  // encapsulated route contexts inherit it (otherwise thrown ApiError/ZodError
+  // fall through to Fastify's default handler, which 500s and leaks internals).
+  app.setErrorHandler((err, _req, reply) => fail(reply, err));
+
   // Health (public in dev, protected in production — handled by authPlugin)
   app.get("/healthz", async (_req, reply) => ok(reply, { ok: true }));
 
@@ -168,9 +173,6 @@ export async function buildApp() {
         });
     });
   }
-
-  // Central error handler
-  app.setErrorHandler((err, _req, reply) => fail(reply, err));
 
   return app;
 }

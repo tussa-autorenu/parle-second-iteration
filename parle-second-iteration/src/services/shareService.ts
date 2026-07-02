@@ -198,16 +198,25 @@ export async function regenerateCode(
 export type TemporaryAccessView = {
   id: string;
   vehicleId: string;
+  /** Same id the web app writes as source_vehicle_id, for renter-app matching. */
+  sourceVehicleId: string;
   vin: string | null;
   friendlyName: string | null;
+  displayName: string | null;
+  model: string | null;
+  color: string | null;
+  batteryLevel: number | null;
+  rangeMiles: number | null;
+  isLocked: boolean | null;
   ownerUserId: string;
   guestUserId: string;
   permissions: SharePermissions;
   startsAt: string;
   expiresAt: string;
+  durationMinutes: number;
 };
 
-function toAccessView(row: {
+type AccessRow = {
   id: string;
   vehicleId: string;
   vin: string | null;
@@ -217,18 +226,71 @@ function toAccessView(row: {
   permissions: unknown;
   startsAt: Date;
   expiresAt: Date;
-}): TemporaryAccessView {
+};
+
+/** Best-effort live-ish status from the most recent telemetry snapshot. */
+type VehicleStatusMeta = {
+  batteryLevel: number | null;
+  rangeMiles: number | null;
+  isLocked: boolean | null;
+};
+
+async function latestVehicleStatus(vehicleId: string): Promise<VehicleStatusMeta> {
+  try {
+    const snap = await prisma.telemetrySnapshot.findFirst({
+      where: { vehicleId },
+      orderBy: { lastSeenAt: "desc" },
+      select: { batteryPercent: true, lockStatus: true },
+    });
+    if (!snap) return { batteryLevel: null, rangeMiles: null, isLocked: null };
+    const isLocked =
+      snap.lockStatus === "LOCKED"
+        ? true
+        : snap.lockStatus === "UNLOCKED"
+          ? false
+          : null;
+    return {
+      batteryLevel: snap.batteryPercent ?? null,
+      rangeMiles: null, // range isn't persisted yet; surface null for now
+      isLocked,
+    };
+  } catch {
+    // Telemetry is optional context — never let it break an access lookup.
+    return { batteryLevel: null, rangeMiles: null, isLocked: null };
+  }
+}
+
+function toAccessView(row: AccessRow, status?: VehicleStatusMeta): TemporaryAccessView {
+  const durationMinutes = Math.max(
+    1,
+    Math.round((row.expiresAt.getTime() - row.startsAt.getTime()) / 60000),
+  );
   return {
     id: row.id,
     vehicleId: row.vehicleId,
+    sourceVehicleId: row.vehicleId,
     vin: row.vin,
     friendlyName: row.friendlyName,
+    displayName: row.friendlyName,
+    model: null,
+    color: null,
+    batteryLevel: status?.batteryLevel ?? null,
+    rangeMiles: status?.rangeMiles ?? null,
+    isLocked: status?.isLocked ?? null,
     ownerUserId: row.ownerUserId,
     guestUserId: row.guestUserId,
     permissions: coercePermissions(row.permissions),
     startsAt: row.startsAt.toISOString(),
     expiresAt: row.expiresAt.toISOString(),
+    durationMinutes,
   };
+}
+
+/** Map access rows to views, attaching best-effort vehicle status to each. */
+async function toAccessViews(rows: AccessRow[]): Promise<TemporaryAccessView[]> {
+  return Promise.all(
+    rows.map(async (row) => toAccessView(row, await latestVehicleStatus(row.vehicleId))),
+  );
 }
 
 /** Guest: redeem a code, creating a time-boxed access record. */
@@ -247,12 +309,28 @@ export async function redeemCode(
     );
   }
 
+  // Look the code up regardless of active/expiry so we can tell "doesn't exist"
+  // (404) apart from "expired/deactivated" (410) — the mobile app maps these to
+  // different messages.
   const shareCode = await prisma.vehicleShareCode.findFirst({
-    where: { code, isActive: true, expiresAt: { gt: new Date() } },
+    where: { code },
     orderBy: { createdAt: "desc" },
   });
   if (!shareCode) {
-    throw new ApiError(404, "not_found", "That ride-share code is invalid or expired.");
+    throw new ApiError(
+      404,
+      "not_found",
+      "That ride-share code doesn’t exist. Double-check it and try again.",
+    );
+  }
+  const isExpired =
+    !shareCode.isActive || shareCode.expiresAt.getTime() <= Date.now();
+  if (isExpired) {
+    throw new ApiError(
+      410,
+      "not_found",
+      "That ride-share code has expired. Ask the owner to share a new one.",
+    );
   }
   if (shareCode.ownerUserId === guestUserId) {
     throw new ApiError(
@@ -287,7 +365,7 @@ export async function redeemCode(
     },
   });
 
-  return toAccessView(created);
+  return toAccessView(created, await latestVehicleStatus(created.vehicleId));
 }
 
 // ── Access lookups ────────────────────────────────────────
@@ -300,7 +378,7 @@ export async function getActiveAccessAsGuest(
     where: { guestUserId, revokedAt: null, expiresAt: { gt: new Date() } },
     orderBy: { createdAt: "desc" },
   });
-  return rows.map(toAccessView);
+  return toAccessViews(rows);
 }
 
 /** Active access records where the user is the owner (the guests they granted). */
@@ -311,7 +389,7 @@ export async function getActiveAccessAsOwner(
     where: { ownerUserId, revokedAt: null, expiresAt: { gt: new Date() } },
     orderBy: { createdAt: "desc" },
   });
-  return rows.map(toAccessView);
+  return toAccessViews(rows);
 }
 
 /** Single active access record for a (guest, vehicle) pair, if any. */
