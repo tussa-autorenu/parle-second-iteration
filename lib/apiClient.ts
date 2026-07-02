@@ -41,7 +41,12 @@ export async function getAuthContext(): Promise<{ token: string | null; userId: 
 }
 
 /** Build request headers without leaking secrets into logs. */
-function buildHeaders(token: string | null, userId: string | null, hasBody: boolean) {
+function buildHeaders(
+  token: string | null,
+  userId: string | null,
+  hasBody: boolean,
+  requestId?: string
+) {
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (hasBody) headers['Content-Type'] = 'application/json';
   // External API key required by api.parlekeys.com.
@@ -50,12 +55,22 @@ function buildHeaders(token: string | null, userId: string | null, hasBody: bool
   if (token) headers['Authorization'] = `Bearer ${token}`;
   // The signed-in Supabase user id the backend uses to scope access.
   if (userId) headers['x-triggered-by'] = userId;
+  // Idempotency id for command routes.
+  if (requestId) headers['x-request-id'] = requestId;
   return headers;
+}
+
+/** Random idempotency id for command requests (matches the web app). */
+export function randomRequestId(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 export async function apiRequest<T>(
   path: string,
-  options: { method?: 'GET' | 'POST'; body?: unknown } = {}
+  options: { method?: 'GET' | 'POST'; body?: unknown; requestId?: string } = {}
 ): Promise<T> {
   if (!isApiConfigured) {
     throw new Error(
@@ -68,14 +83,14 @@ export async function apiRequest<T>(
     );
   }
 
-  const { method = 'GET', body } = options;
+  const { method = 'GET', body, requestId } = options;
   const { token, userId } = await getAuthContext();
 
   let res: Response;
   try {
     res = await fetch(`${API_BASE}${path}`, {
       method,
-      headers: buildHeaders(token, userId, body !== undefined),
+      headers: buildHeaders(token, userId, body !== undefined, requestId),
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch {

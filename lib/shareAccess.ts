@@ -74,6 +74,22 @@ export function formatShareCode(input: string): string {
   return `${alnum.slice(0, 3)}-${alnum.slice(3)}`;
 }
 
+/**
+ * Default guest access length (minutes) sent with a redeem. Must be one of the
+ * backend's allowed durations: [1, 15, 60, 1440, 2880, 10080]. One hour is a
+ * sensible renter default; wire this to a picker later if the UI adds one.
+ */
+export const DEFAULT_ACCESS_DURATION_MINUTES = 60;
+
+/** Turn a raw backend/transport error into a clear redeem message. */
+function redeemErrorMessage(raw: string): string {
+  const isGeneric = !raw.trim() || /failed \(\d+\)/i.test(raw);
+  if (isGeneric) {
+    return 'Share code could not be redeemed. Check that the code is active and not expired.';
+  }
+  return `Share code could not be redeemed: ${raw}`;
+}
+
 /** Map a backend access record into the renter `Vehicle` display shape. */
 function mapAccessToVehicle(record: TemporaryAccessRecord, index: number): Vehicle {
   const color = (record.color ?? '').toLowerCase();
@@ -139,9 +155,25 @@ export async function redeemShareCode(code: string): Promise<{ message: string }
   const clean = formatShareCode(code);
   if (!clean) throw new Error('Enter a share code first.');
 
-  // Body carries the normalized code; the client also sends the Supabase
-  // user id + session token via headers (see lib/apiClient.ts).
-  await apiRequest('/share/redeem', { method: 'POST', body: { code: clean } });
+  // Backend `/share/redeem` requires BOTH the code and a durationMinutes drawn
+  // from its allowed set. The Supabase user id (x-triggered-by) + API key are
+  // attached by lib/apiClient.ts.
+  const body = { code: clean, durationMinutes: DEFAULT_ACCESS_DURATION_MINUTES };
+
+  // Safe debug — path + normalized code + body keys only (no secrets/tokens).
+  console.log('[Share] redeem →', {
+    path: '/share/redeem',
+    code: clean,
+    bodyKeys: Object.keys(body),
+  });
+
+  try {
+    await apiRequest('/share/redeem', { method: 'POST', body });
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err ?? '');
+    throw new Error(redeemErrorMessage(raw));
+  }
+
   return { message: 'Share code redeemed. Your vehicle will appear below.' };
 }
 

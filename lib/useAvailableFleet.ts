@@ -78,8 +78,32 @@ export function useAvailableFleet(): AvailableFleet {
     async (code: string): Promise<RedeemResult> => {
       try {
         const { message } = await redeemShareCode(code);
-        const shared = await getTemporarySharedVehicles();
+
+        // Refresh BOTH shared access and the public fleet after a successful
+        // redeem. Public fetch failures here are non-fatal to the redeem.
+        const [shared] = await Promise.all([
+          getTemporarySharedVehicles(),
+          getAvailableVehicles()
+            .then((pub) => setPublicVehicles(pub))
+            .catch((err) =>
+              console.warn(
+                '[Fleet] public refresh after redeem failed:',
+                err instanceof Error ? err.message : err
+              )
+            ),
+        ]);
         setSharedVehicles(shared);
+
+        // Redeem succeeded but /share/access shows nothing yet — tell the user
+        // clearly instead of silently implying failure. (Response shape is
+        // logged safely inside getTemporarySharedVehicles.)
+        if (shared.length === 0) {
+          return {
+            ok: true,
+            message:
+              'Code redeemed, but no shared vehicle is active yet. Pull down to refresh in a moment.',
+          };
+        }
         return { ok: true, message };
       } catch (err) {
         return {

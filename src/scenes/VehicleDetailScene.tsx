@@ -379,7 +379,7 @@ export function VehicleDetailScene({ vehicle, onBack, onStartRide }: Props) {
   );
 }
 
-/** Small reusable spec tile used in the 3-up row under the price card. */
+/** Small reusable spec tile used in the 3-up battery / range / seats row. */
 function SpecTile({ value, label }: { value: string; label: string }) {
   return (
     <View

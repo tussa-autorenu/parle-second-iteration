@@ -39,7 +39,7 @@ export function VehicleCard({ vehicle, onPress }: Props) {
         boxShadow: '0 4px 8px rgba(0,0,0,0.04)',
       }}
     >
-      {/* Top row: car image (left) — details + price (right) */}
+      {/* Top row: car image (left) — model / distance / battery (right) */}
       <View
         className="flex-row items-center justify-between"
         style={{ height: 96 }}
@@ -56,12 +56,12 @@ export function VehicleCard({ vehicle, onPress }: Props) {
           />
         </View>
 
-        {/* Right side — model/distance/battery chip column + price */}
+        {/* Right side — model / distance / battery chip column (no pricing) */}
         <View
-          className="flex-row items-start justify-between"
+          className="flex-row items-start"
           style={{ width: 202 }}
         >
-          <View className="gap-2" style={{ width: 112 }}>
+          <View className="gap-2" style={{ width: 202 }}>
             <View className="gap-0.5">
               <Text
                 className="font-space-grotesk-bold text-parle-dark"
@@ -95,13 +95,6 @@ export function VehicleCard({ vehicle, onPress }: Props) {
               </View>
             )}
           </View>
-
-          <Text
-            className="font-space-grotesk-bold text-parle-dark"
-            style={{ fontSize: 18 }}
-          >
-            {vehicle.hourlyRate == null ? '$--/hr' : `$${vehicle.hourlyRate}/hr`}
-          </Text>
         </View>
       </View>
 
