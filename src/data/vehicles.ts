@@ -22,8 +22,15 @@ export type Vehicle = {
   id: string;
   /** Defaults to 'public'. */
   source: VehicleSource;
-  /** ISO expiry of temporary shared access (shared vehicles only). */
-  sharedExpiresAt?: string | null;
+  /** Convenience mirror of `source === 'shared'`. */
+  isSharedAccess: boolean;
+  /**
+   * Identifier the backend command endpoints expect (VIN / source vehicle id).
+   * Used by lib/vehicleCommands.ts for Lock / Unlock / Ready Drive.
+   */
+  commandVehicleId: string | null;
+  /** Temporary access window for shared vehicles (null for the public fleet). */
+  access: VehicleAccess | null;
   /** Display title — real display_name / model, falling back to "Tesla Vehicle". */
   model: string;
   /** One of the three exterior colors we have image assets for. */
@@ -45,8 +52,23 @@ export type Vehicle = {
 };
 
 export type VehicleOwner = {
+  /** Empty string when the backend didn't return a host name. */
   name: string;
   role: string;
+  /** Only set when the backend safely returns an email for renter display. */
+  email: string | null;
+};
+
+/** Temporary shared-access window returned by the backend `/share/access`. */
+export type VehicleAccess = {
+  /** ISO timestamp access began (null when unknown). */
+  startsAt: string | null;
+  /** ISO timestamp access ends (null when unknown). */
+  expiresAt: string | null;
+  /** Total granted duration in minutes (null when unknown). */
+  durationMinutes: number | null;
+  /** The redeemed share code, for local display only (null when unknown). */
+  shareCode: string | null;
 };
 
 /** Standard Tesla amenities shown on the detail screen. */
@@ -59,3 +81,56 @@ export const DEFAULT_FEATURES = [
 
 /** Teslas are 5-seaters; the DB doesn't track seat count. */
 export const DEFAULT_SEATS = 5;
+
+/* ------------------------------------------------------------------ */
+/* Access / duration formatting helpers (pure, UI-agnostic).          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Human label for a total granted duration, e.g. "4 hours", "90 minutes",
+ * "2h 30m". Returns null when the duration is unknown.
+ */
+export function formatAccessDuration(minutes: number | null | undefined): string | null {
+  if (minutes == null || !Number.isFinite(minutes) || minutes <= 0) return null;
+  const total = Math.round(minutes);
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  if (h === 0) return `${m} minute${m === 1 ? '' : 's'}`;
+  if (m === 0) return `${h} hour${h === 1 ? '' : 's'}`;
+  return `${h}h ${m}m`;
+}
+
+/**
+ * Human label for time left until `expiresAt`, e.g. "2h 14m", "14m".
+ * Returns "Expired" once past, null when the timestamp is unknown/invalid.
+ */
+export function formatTimeRemaining(
+  expiresAtISO: string | null | undefined,
+  now: number = Date.now()
+): string | null {
+  if (!expiresAtISO) return null;
+  const expiresMs = Date.parse(expiresAtISO);
+  if (Number.isNaN(expiresMs)) return null;
+  const diffMs = expiresMs - now;
+  if (diffMs <= 0) return 'Expired';
+  const totalMin = Math.floor(diffMs / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (h === 0) return `${m}m`;
+  return `${h}h ${m}m`;
+}
+
+/**
+ * Derive a granted duration (minutes) from start/expiry timestamps when the
+ * backend didn't send an explicit duration. Returns null when unknown.
+ */
+export function deriveDurationMinutes(
+  startsAtISO: string | null | undefined,
+  expiresAtISO: string | null | undefined
+): number | null {
+  if (!startsAtISO || !expiresAtISO) return null;
+  const start = Date.parse(startsAtISO);
+  const end = Date.parse(expiresAtISO);
+  if (Number.isNaN(start) || Number.isNaN(end) || end <= start) return null;
+  return Math.round((end - start) / 60000);
+}

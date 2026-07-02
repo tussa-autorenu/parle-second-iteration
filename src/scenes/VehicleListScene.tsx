@@ -13,6 +13,7 @@ import Animated, { Easing, FadeInUp } from 'react-native-reanimated';
 import { StatusBar } from 'expo-status-bar';
 
 import type { FleetStatus, RedeemResult } from '@/lib/useAvailableFleet';
+import { formatShareCode } from '@/lib/shareAccess';
 import type { Vehicle } from '@/src/data/vehicles';
 import { ParleLogo } from '@/src/components/ParleLogo';
 import { VehicleCard } from '@/src/components/VehicleCard';
@@ -175,13 +176,17 @@ function ShareCodeSection({
           <View className="flex-row items-center gap-2">
             <TextInput
               className="flex-1 rounded-xl border border-parle-desat-3 bg-white px-3 font-space-grotesk text-parle-dark"
-              style={{ height: 46, fontSize: 15 }}
-              placeholder="e.g. ABC123"
+              style={{ height: 46, fontSize: 15, letterSpacing: 1 }}
+              placeholder="e.g. XEH-D3R"
               placeholderTextColor="#7a757f"
               value={code}
-              onChangeText={setCode}
+              // Normalize as the user types: uppercase, strip spaces, keep the
+              // middle dash → always renders/sends the canonical XXX-XXX form.
+              onChangeText={(text) => setCode(formatShareCode(text))}
               autoCapitalize="characters"
               autoCorrect={false}
+              autoComplete="off"
+              maxLength={7}
               editable={!busy}
               onSubmitEditing={handleRedeem}
               returnKeyType="go"

@@ -26,11 +26,17 @@ export type FlowState = {
    * transition so the ride screen knows which car is unlocked.
    */
   selectedVehicleId: string | null;
+  /**
+   * Epoch ms when the ride started (set on RIDE_STARTED). Drives the live
+   * duration timer on the ride screen. Null when no ride is active.
+   */
+  rideStartedAt: number | null;
 };
 
 export const INITIAL_FLOW: FlowState = {
   scene: "loading",
   selectedVehicleId: null,
+  rideStartedAt: null,
 };
 
 export type FlowEvent =
@@ -52,13 +58,14 @@ export function flowReducer(state: FlowState, event: FlowEvent): FlowState {
     case "LOADING_COMPLETE":
       return { ...state, scene: "vehicleList" };
     case "VEHICLE_SELECTED":
-      return { scene: "vehicleDetail", selectedVehicleId: event.id };
+      return { scene: "vehicleDetail", selectedVehicleId: event.id, rideStartedAt: null };
     case "BACK_TO_LIST":
-      return { scene: "vehicleList", selectedVehicleId: null };
+      return { scene: "vehicleList", selectedVehicleId: null, rideStartedAt: null };
     case "RIDE_STARTED":
-      return { ...state, scene: "rideStarted" };
+      // Stamp the ride start so the ride screen can run a real elapsed timer.
+      return { ...state, scene: "rideStarted", rideStartedAt: Date.now() };
     case "RIDE_ENDED":
-      return { scene: "vehicleList", selectedVehicleId: null };
+      return { scene: "vehicleList", selectedVehicleId: null, rideStartedAt: null };
     case "LOGO_TAPPED":
       // Full reset — replay through loading. Per Donovan's spec: any logo
       // instance resets the flow.

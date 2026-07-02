@@ -1,5 +1,9 @@
-import type { Vehicle } from '@/src/data/vehicles';
-import { supabase } from './supabase';
+import {
+  deriveDurationMinutes,
+  type Vehicle,
+  type VehicleColor,
+} from '@/src/data/vehicles';
+import { apiRequest, isApiConfigured } from './apiClient';
 
 /**
  * Share-code access for the renter app.
@@ -17,14 +21,7 @@ import { supabase } from './supabase';
  * return rows).
  */
 
-const API_BASE = (process.env.EXPO_PUBLIC_API_BASE_URL ?? '').replace(/\/+$/, '');
-
-export const isShareApiConfigured = API_BASE.length > 0;
-
-/** Backend response envelope: { ok: true, data } | { ok: false, error }. */
-type Envelope<T> =
-  | { ok: true; data: T }
-  | { ok: false; error?: { reason?: string; message?: string; details?: unknown } };
+export const isShareApiConfigured = isApiConfigured;
 
 /** A temporary access record as returned by the backend (best-effort shape). */
 type TemporaryAccessRecord = {
@@ -35,84 +32,52 @@ type TemporaryAccessRecord = {
   displayName?: string | null;
   model?: string | null;
   color?: string | null;
+  batteryLevel?: number | null;
+  rangeMiles?: number | null;
+  isLocked?: boolean | null;
   ownerUserId?: string;
+  // Host / owner details (any of these names the backend may use).
+  ownerName?: string | null;
+  hostName?: string | null;
+  ownerEmail?: string | null;
+  hostEmail?: string | null;
+  // Access window (any of these names the backend may use).
+  startsAt?: string | null;
+  grantedAt?: string | null;
   expiresAt?: string | null;
+  durationMinutes?: number | null;
+  shareCode?: string | null;
+  code?: string | null;
 };
 
 type ShareAccessResponse =
   | TemporaryAccessRecord[]
   | { asGuest?: TemporaryAccessRecord[]; asOwner?: TemporaryAccessRecord[] };
 
-async function getAuthContext(): Promise<{ token: string | null; userId: string | null }> {
-  const { data } = await supabase.auth.getSession();
-  return {
-    token: data.session?.access_token ?? null,
-    userId: data.session?.user?.id ?? null,
-  };
-}
+/* ------------------------------------------------------------------ */
+/* Share-code formatting.                                             */
+/* ------------------------------------------------------------------ */
 
-/** Build auth headers without leaking secrets into logs. */
-function buildHeaders(token: string | null, userId: string | null, hasBody: boolean) {
-  const headers: Record<string, string> = { Accept: 'application/json' };
-  if (hasBody) headers['Content-Type'] = 'application/json';
-  // Supabase session token if the backend gates on it.
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-  // The signed-in Supabase user id the backend uses to scope access.
-  if (userId) headers['x-triggered-by'] = userId;
-  return headers;
-}
-
-async function request<T>(
-  path: string,
-  options: { method?: 'GET' | 'POST'; body?: unknown } = {}
-): Promise<T> {
-  if (!isShareApiConfigured) {
-    throw new Error(
-      'Share codes are unavailable: EXPO_PUBLIC_API_BASE_URL is not set. Add it to .env and restart with `npx expo start -c`.'
-    );
-  }
-
-  const { method = 'GET', body } = options;
-  const { token, userId } = await getAuthContext();
-
-  let res: Response;
-  try {
-    res = await fetch(`${API_BASE}${path}`, {
-      method,
-      headers: buildHeaders(token, userId, body !== undefined),
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
-  } catch {
-    throw new Error('Can’t reach Parlé right now. Check your connection and try again.');
-  }
-
-  if (res.status === 204) return undefined as T;
-
-  let payload: Envelope<T> | null = null;
-  const text = await res.text();
-  if (text) {
-    try {
-      payload = JSON.parse(text) as Envelope<T>;
-    } catch {
-      payload = null;
-    }
-  }
-
-  if (!res.ok || (payload && payload.ok === false)) {
-    const message =
-      (payload && payload.ok === false && payload.error?.message) ||
-      `Request to ${path} failed (${res.status}).`;
-    throw new Error(message);
-  }
-
-  if (payload && 'data' in payload) return payload.data;
-  return (payload as unknown as T) ?? (undefined as T);
+/**
+ * Normalize renter input into the web app's canonical share-code format
+ * `XXX-XXX` (3 alphanumerics, a dash, 3 alphanumerics):
+ *   • uppercases everything
+ *   • strips spaces and stray separators
+ *   • re-inserts the middle dash
+ *   • caps at 6 significant characters
+ *
+ * "xehd3r" → "XEH-D3R", "XEH-D3R" → "XEH-D3R", " xeh d3r " → "XEH-D3R".
+ */
+export function formatShareCode(input: string): string {
+  const alnum = (input ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+  if (alnum.length <= 3) return alnum;
+  return `${alnum.slice(0, 3)}-${alnum.slice(3)}`;
 }
 
 /** Map a backend access record into the renter `Vehicle` display shape. */
 function mapAccessToVehicle(record: TemporaryAccessRecord, index: number): Vehicle {
   const color = (record.color ?? '').toLowerCase();
-  const mappedColor =
+  const mappedColor: VehicleColor =
     color.includes('red') ? 'Red' : color.includes('black') ? 'Black' : 'White';
 
   const title =
@@ -121,22 +86,40 @@ function mapAccessToVehicle(record: TemporaryAccessRecord, index: number): Vehic
     record.model?.trim() ||
     (record.vin ? `Tesla ${record.vin.slice(-4)}` : 'Shared Tesla');
 
+  const startsAt = record.startsAt ?? record.grantedAt ?? null;
+  const expiresAt = record.expiresAt ?? null;
+  const durationMinutes =
+    record.durationMinutes ?? deriveDurationMinutes(startsAt, expiresAt);
+
+  const ownerName = (record.ownerName ?? record.hostName ?? '').trim();
+  const ownerEmail = (record.ownerEmail ?? record.hostEmail ?? '').trim() || null;
+  const shareCode = record.shareCode ?? record.code ?? null;
+
+  // Backend identifier the command endpoints expect.
+  const commandVehicleId = record.vehicleId ?? record.vin ?? record.id ?? null;
+
   return {
     id: `shared:${record.vehicleId ?? record.id ?? index}`,
     source: 'shared',
-    sharedExpiresAt: record.expiresAt ?? null,
+    isSharedAccess: true,
+    commandVehicleId,
+    access: { startsAt, expiresAt, durationMinutes, shareCode },
     model: title,
     color: mappedColor,
-    // Backend share access doesn't currently carry these specs; leave null
-    // rather than inventing values. The card/detail null-guard handles it.
+    // Share access carries no proximity; leave null rather than inventing.
     distanceMi: null,
-    batteryPct: null,
+    batteryPct: record.batteryLevel == null ? null : Math.round(Number(record.batteryLevel)),
+    // Never show pricing for shared vehicles.
     hourlyRate: null,
-    rangeMi: null,
+    rangeMi: record.rangeMiles == null ? null : Math.round(Number(record.rangeMiles)),
     seats: 5,
-    isLocked: null,
+    isLocked: record.isLocked ?? null,
     features: [],
-    owner: { name: 'Shared with you', role: 'Direct access' },
+    owner: {
+      name: ownerName,
+      role: 'Host',
+      email: ownerEmail,
+    },
   };
 }
 
@@ -148,14 +131,17 @@ function extractGuestRecords(data: ShareAccessResponse | null | undefined): Temp
 }
 
 /**
- * Redeem a share code. Returns a human-readable confirmation message. Throws a
- * readable Error on failure (caller shows it inline).
+ * Redeem a share code against the real backend. Returns a human-readable
+ * confirmation message. Throws a readable Error on failure (caller shows it
+ * inline). The code is normalized to `XXX-XXX` before sending.
  */
 export async function redeemShareCode(code: string): Promise<{ message: string }> {
-  const clean = code.trim();
+  const clean = formatShareCode(code);
   if (!clean) throw new Error('Enter a share code first.');
 
-  await request('/share/redeem', { method: 'POST', body: { code: clean } });
+  // Body carries the normalized code; the client also sends the Supabase
+  // user id + session token via headers (see lib/apiClient.ts).
+  await apiRequest('/share/redeem', { method: 'POST', body: { code: clean } });
   return { message: 'Share code redeemed. Your vehicle will appear below.' };
 }
 
@@ -171,7 +157,7 @@ export async function getTemporarySharedVehicles(): Promise<Vehicle[]> {
   }
 
   try {
-    const data = await request<ShareAccessResponse>('/share/access');
+    const data = await apiRequest<ShareAccessResponse>('/share/access');
     const records = extractGuestRecords(data);
 
     // Safe shape logging — keys + counts only, never tokens/secrets.

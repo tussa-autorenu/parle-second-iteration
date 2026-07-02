@@ -14,7 +14,12 @@ import Animated, {
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 
-import type { Vehicle, VehicleColor } from '@/src/data/vehicles';
+import {
+  formatAccessDuration,
+  formatTimeRemaining,
+  type Vehicle,
+  type VehicleColor,
+} from '@/src/data/vehicles';
 
 // Same image lookup as on the list card so the visual is continuous.
 const TESLA_IMAGES: Record<VehicleColor, number> = {
@@ -61,6 +66,13 @@ export function VehicleDetailScene({ vehicle, onBack, onStartRide }: Props) {
   // Local guard so a frantic double-tap on the X doesn't fire the close
   // animation twice (which would call `onBack` twice and break state).
   const [isClosing, setIsClosing] = useState(false);
+
+  // Re-render once a minute so the "Access expires in …" label stays fresh.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   const imageScale = useSharedValue(IMAGE_INITIAL_SCALE);
   const wrapperOpacity = useSharedValue(1);
@@ -131,6 +143,12 @@ export function VehicleDetailScene({ vehicle, onBack, onStartRide }: Props) {
     : vehicle.distanceMi == null
       ? `${vehicle.color}  ·  Nearby`
       : `${vehicle.color}  ·  ${vehicle.distanceMi.toFixed(1)} mi away`;
+
+  // Shared-access host + duration details (never fabricated).
+  const grantedLabel = formatAccessDuration(vehicle.access?.durationMinutes);
+  const remainingLabel = formatTimeRemaining(vehicle.access?.expiresAt, now);
+  const hostName = vehicle.owner.name.trim();
+  const hasHostDetails = hostName.length > 0;
 
   return (
     <SafeAreaView className="flex-1 bg-white" edges={['top', 'bottom']}>
@@ -219,7 +237,7 @@ export function VehicleDetailScene({ vehicle, onBack, onStartRide }: Props) {
                 .delay(FEATURES_DELAY)
                 .easing(Easing.out(Easing.cubic))}
             >
-              {/* Features list (standard Tesla amenities; empty for shared). */}
+              {/* Left column: features for public fleet, access window for shared. */}
               <View className="gap-2" style={{ width: 187 }}>
                 <Text
                   className="font-space-grotesk-bold text-parle-dark"
@@ -228,12 +246,34 @@ export function VehicleDetailScene({ vehicle, onBack, onStartRide }: Props) {
                   {isShared ? 'Access' : 'Included Features'}
                 </Text>
                 {isShared ? (
-                  <Text
-                    className="font-space-grotesk text-parle-desat-7"
-                    style={{ fontSize: 14, lineHeight: 18 }}
-                  >
-                    Shared with you via a direct access code.
-                  </Text>
+                  <View className="gap-1">
+                    {grantedLabel ? (
+                      <Text
+                        className="font-space-grotesk text-parle-desat-7"
+                        style={{ fontSize: 14, lineHeight: 18 }}
+                      >
+                        Access granted for {grantedLabel}
+                      </Text>
+                    ) : null}
+                    {remainingLabel ? (
+                      <Text
+                        className="font-space-grotesk-medium text-parle-logo"
+                        style={{ fontSize: 14, lineHeight: 18 }}
+                      >
+                        {remainingLabel === 'Expired'
+                          ? 'Access expired'
+                          : `Access expires in ${remainingLabel}`}
+                      </Text>
+                    ) : null}
+                    {!grantedLabel && !remainingLabel ? (
+                      <Text
+                        className="font-space-grotesk text-parle-desat-7"
+                        style={{ fontSize: 14, lineHeight: 18 }}
+                      >
+                        Shared with you via a direct access code.
+                      </Text>
+                    ) : null}
+                  </View>
                 ) : (
                   vehicle.features.map((feature) => (
                     <View key={feature} className="flex-row items-center gap-2">
@@ -249,7 +289,9 @@ export function VehicleDetailScene({ vehicle, onBack, onStartRide }: Props) {
                 )}
               </View>
 
-              {/* Owner card */}
+              {/* Owner / host card. For shared vehicles this shows the real host
+                  name + email when the backend returns them, otherwise a clear
+                  "Host details unavailable" (never fabricated). */}
               <View className="items-center gap-2" style={{ width: 105 }}>
                 <View
                   className="rounded-full overflow-hidden"
@@ -261,18 +303,50 @@ export function VehicleDetailScene({ vehicle, onBack, onStartRide }: Props) {
                     style={{ width: '100%', height: '100%' }}
                   />
                 </View>
-                <Text
-                  className="font-space-grotesk-bold text-parle-desat-7 text-center"
-                  style={{ fontSize: 16, lineHeight: 16 }}
-                >
-                  {vehicle.owner.name}
-                </Text>
-                <Text
-                  className="font-space-grotesk text-parle-desat-7 text-center"
-                  style={{ fontSize: 12, lineHeight: 16 }}
-                >
-                  {vehicle.owner.role}
-                </Text>
+                {isShared ? (
+                  hasHostDetails ? (
+                    <>
+                      <Text
+                        className="font-space-grotesk-bold text-parle-desat-7 text-center"
+                        style={{ fontSize: 16, lineHeight: 16 }}
+                        numberOfLines={2}
+                      >
+                        Host: {hostName}
+                      </Text>
+                      {vehicle.owner.email ? (
+                        <Text
+                          className="font-space-grotesk text-parle-desat-7 text-center"
+                          style={{ fontSize: 11, lineHeight: 15 }}
+                          numberOfLines={1}
+                        >
+                          {vehicle.owner.email}
+                        </Text>
+                      ) : null}
+                    </>
+                  ) : (
+                    <Text
+                      className="font-space-grotesk text-parle-desat-7 text-center"
+                      style={{ fontSize: 13, lineHeight: 17 }}
+                    >
+                      Host details unavailable
+                    </Text>
+                  )
+                ) : (
+                  <>
+                    <Text
+                      className="font-space-grotesk-bold text-parle-desat-7 text-center"
+                      style={{ fontSize: 16, lineHeight: 16 }}
+                    >
+                      {vehicle.owner.name}
+                    </Text>
+                    <Text
+                      className="font-space-grotesk text-parle-desat-7 text-center"
+                      style={{ fontSize: 12, lineHeight: 16 }}
+                    >
+                      {vehicle.owner.role}
+                    </Text>
+                  </>
+                )}
               </View>
             </Animated.View>
           </View>

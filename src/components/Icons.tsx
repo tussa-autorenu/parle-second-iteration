@@ -50,6 +50,42 @@ export function LockIcon({
   );
 }
 
+export function LockOpenIcon({
+  size = 24,
+  color = '#A749FF',
+  strokeWidth = 2,
+}: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M7 10V7C7 4.23858 9.23858 2 12 2C14.0503 2 15.8124 3.2341 16.584 5M7.2 22H16.8C17.9201 22 18.4802 22 18.908 21.782C19.2843 21.5903 19.5903 21.2843 19.782 20.908C20 20.4802 20 19.9201 20 18.8V13.2C20 12.0799 20 11.5198 19.782 11.092C19.5903 10.7157 19.2843 10.4097 18.908 10.218C18.4802 10 17.9201 10 16.8 10H7.2C6.0799 10 5.51984 10 5.09202 10.218C4.71569 10.4097 4.40973 10.7157 4.21799 11.092C4 11.5198 4 12.0799 4 13.2V18.8C4 19.9201 4 20.4802 4.21799 20.908C4.40973 21.2843 4.71569 21.5903 5.09202 21.782C5.51984 22 6.07989 22 7.2 22Z"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
+export function BoltIcon({
+  size = 24,
+  color = '#A749FF',
+  strokeWidth = 2,
+}: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M13 2L4.09344 12.6879C3.74463 13.1064 3.57023 13.3157 3.56756 13.4925C3.56424 13.7148 3.66319 13.9291 3.83837 14.0782C4.02143 14.234 4.28871 14.234 4.82326 14.234H12L11 22L19.9066 11.3121C20.2554 10.8936 20.4298 10.6843 20.4324 10.5075C20.4358 10.2852 20.3368 10.0709 20.1616 9.92176C19.9786 9.766 19.7113 9.766 19.1767 9.766H12L13 2Z"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
 export function SunIcon({
   size = 24,
   color = '#A749FF',

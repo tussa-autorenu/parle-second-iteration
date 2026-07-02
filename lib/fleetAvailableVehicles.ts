@@ -115,6 +115,10 @@ export function mapFleetVehicleToVehicle(row: FleetAvailableVehicle): Vehicle {
   return {
     id: row.id,
     source: 'public',
+    isSharedAccess: false,
+    // Command endpoints key off the real vehicle id / VIN, not the fleet row id.
+    commandVehicleId: row.source_vehicle_id ?? row.vin ?? row.id,
+    access: null,
     model: getVehicleTitle(row),
     color: getVehicleColor(row),
     distanceMi: row.distance_miles == null ? null : Number(row.distance_miles),
@@ -127,6 +131,7 @@ export function mapFleetVehicleToVehicle(row: FleetAvailableVehicle): Vehicle {
     owner: {
       name: 'Parlé Host',
       role: 'Verified fleet owner',
+      email: null,
     },
   };
 }

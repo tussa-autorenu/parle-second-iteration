@@ -70,6 +70,7 @@ export function Flow() {
       {state.scene === 'rideStarted' && (
         <RideStartedScene
           vehicle={selectedVehicle}
+          rideStartedAt={state.rideStartedAt}
           onEndRide={() => dispatch({ type: 'RIDE_ENDED' })}
         />
       )}
