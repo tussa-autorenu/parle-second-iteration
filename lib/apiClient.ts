@@ -14,7 +14,18 @@ import { supabase } from './supabase';
 
 export const API_BASE = (process.env.EXPO_PUBLIC_API_BASE_URL ?? '').replace(/\/+$/, '');
 
+/** External API key required by api.parlekeys.com (sent as `x-parle-api-key`). */
+const PARLE_API_KEY = (process.env.EXPO_PUBLIC_PARLE_API_KEY ?? '').trim();
+
 export const isApiConfigured = API_BASE.length > 0;
+export const hasParleApiKey = PARLE_API_KEY.length > 0;
+
+// Safe diagnostics at import — never logs the full key.
+console.log('[API] config check', {
+  apiBaseUrlExists: isApiConfigured,
+  parleApiKeyExists: hasParleApiKey,
+  parleApiKeyPreview: hasParleApiKey ? `${PARLE_API_KEY.slice(0, 6)}…` : '(missing)',
+});
 
 /** Backend response envelope. Plain payloads (no envelope) are also accepted. */
 type Envelope<T> =
@@ -29,10 +40,12 @@ export async function getAuthContext(): Promise<{ token: string | null; userId: 
   };
 }
 
-/** Build auth headers without leaking secrets into logs. */
+/** Build request headers without leaking secrets into logs. */
 function buildHeaders(token: string | null, userId: string | null, hasBody: boolean) {
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (hasBody) headers['Content-Type'] = 'application/json';
+  // External API key required by api.parlekeys.com.
+  if (PARLE_API_KEY) headers['x-parle-api-key'] = PARLE_API_KEY;
   // Supabase session token if the backend gates on it.
   if (token) headers['Authorization'] = `Bearer ${token}`;
   // The signed-in Supabase user id the backend uses to scope access.
@@ -47,6 +60,11 @@ export async function apiRequest<T>(
   if (!isApiConfigured) {
     throw new Error(
       'Parlé backend is unavailable: EXPO_PUBLIC_API_BASE_URL is not set. Add it to .env and restart with `npx expo start -c`.'
+    );
+  }
+  if (!hasParleApiKey) {
+    throw new Error(
+      'Parlé API key is missing. Add EXPO_PUBLIC_PARLE_API_KEY to .env and restart Expo.'
     );
   }
 
@@ -77,6 +95,13 @@ export async function apiRequest<T>(
   }
 
   if (!res.ok || (payload && payload.ok === false)) {
+    // Safe backend diagnostics — status + a short body preview so we can tell
+    // auth/session issues apart from a missing key. No request secrets here.
+    console.warn('[API] request failed', {
+      path,
+      status: res.status,
+      bodyPreview: text ? text.slice(0, 200) : '(empty body)',
+    });
     const message =
       (payload && payload.ok === false && payload.error?.message) ||
       `Request to ${path} failed (${res.status}).`;
