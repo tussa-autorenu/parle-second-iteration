@@ -1,3 +1,5 @@
+import type { PostgrestError } from '@supabase/supabase-js';
+
 import {
   DEFAULT_FEATURES,
   DEFAULT_SEATS,
@@ -31,9 +33,38 @@ export type FleetAvailableVehicle = {
 const SELECT_COLUMNS =
   'id, owner_user_id, source_vehicle_id, vin, display_name, model, color, battery_level, range_miles, is_locked, hourly_rate, distance_miles, is_available, created_at, updated_at';
 
+export type FleetLoadResult = {
+  vehicles: Vehicle[];
+  publicCount: number;
+  ownerCount: number;
+};
+
+function logSupabaseError(context: string, error: PostgrestError): void {
+  console.warn(`[Fleet] ${context} error:`, {
+    message: error.message,
+    code: error.code,
+    details: error.details,
+    hint: error.hint,
+  });
+}
+
+/** Deduplicate fleet rows by source_vehicle_id, falling back to row id. */
+export function dedupeFleetRows(rows: FleetAvailableVehicle[]): FleetAvailableVehicle[] {
+  const seen = new Set<string>();
+  const merged: FleetAvailableVehicle[] = [];
+
+  for (const row of rows) {
+    const key = row.source_vehicle_id?.trim() || row.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(row);
+  }
+
+  return merged;
+}
+
 /**
- * Fetch every currently available fleet vehicle, newest first. Throws on a
- * Supabase error so callers can render an error state.
+ * Fetch every currently available fleet vehicle, newest first.
  */
 export async function getAvailableFleetVehicles(): Promise<FleetAvailableVehicle[]> {
   const { data, error } = await supabase
@@ -43,28 +74,32 @@ export async function getAvailableFleetVehicles(): Promise<FleetAvailableVehicle
     .order('created_at', { ascending: false });
 
   if (error) {
-    // Log the exact Supabase table error (message/code/details/hint) so native
-    // failures are diagnosable. No secrets are included in these fields.
-    console.warn('[Fleet] fleet_available_vehicles query error:', {
-      message: error.message,
-      code: error.code,
-      details: error.details,
-      hint: error.hint,
-    });
+    logSupabaseError('public fleet_available_vehicles', error);
     throw new Error(error.message);
   }
 
-  const rows = (data ?? []) as FleetAvailableVehicle[];
-  console.log(`[Fleet] fleet_available_vehicles count: ${rows.length}`);
-  if (rows.length === 0) {
-    console.log(
-      '[Fleet] No rows returned from fleet_available_vehicles. ' +
-        'Either no owner has published a vehicle (is_available = true) yet, ' +
-        'or RLS is blocking the read for this (un)authenticated user.'
-    );
+  return (data ?? []) as FleetAvailableVehicle[];
+}
+
+/**
+ * Fetch fleet rows owned by the signed-in user (any availability flag).
+ * Returns [] when there is no session. Logs — but does not throw — on error.
+ */
+export async function getOwnerFleetVehicles(
+  ownerUserId: string
+): Promise<FleetAvailableVehicle[]> {
+  const { data, error } = await supabase
+    .from('fleet_available_vehicles')
+    .select(SELECT_COLUMNS)
+    .eq('owner_user_id', ownerUserId)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    logSupabaseError('owner fleet_available_vehicles', error);
+    return [];
   }
 
-  return rows;
+  return (data ?? []) as FleetAvailableVehicle[];
 }
 
 /**
@@ -136,10 +171,83 @@ export function mapFleetVehicleToVehicle(row: FleetAvailableVehicle): Vehicle {
   };
 }
 
-/** Fetch + map the available fleet in one call. */
-export async function getAvailableVehicles(): Promise<Vehicle[]> {
-  const rows = await getAvailableFleetVehicles();
-  return rows.map(mapFleetVehicleToVehicle);
+/**
+ * Load the renter fleet feed from Supabase:
+ *   • Public rows (is_available = true)
+ *   • Owner rows for the signed-in user (owner_user_id = auth user id)
+ *
+ * Merges and deduplicates before mapping into the scene `Vehicle` shape.
+ * Surfaces an error only when every query fails and no rows are returned.
+ */
+export async function getAvailableVehicles(): Promise<FleetLoadResult> {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  const userIdExists = !!user?.id;
+  console.log(`[Fleet] current user id exists: ${userIdExists}`);
+
+  const publicPromise = supabase
+    .from('fleet_available_vehicles')
+    .select(SELECT_COLUMNS)
+    .eq('is_available', true)
+    .order('created_at', { ascending: false });
+
+  const ownerPromise = user?.id
+    ? supabase
+        .from('fleet_available_vehicles')
+        .select(SELECT_COLUMNS)
+        .eq('owner_user_id', user.id)
+        .order('created_at', { ascending: false })
+    : null;
+
+  const [publicResult, ownerResult] = await Promise.all([
+    publicPromise,
+    ownerPromise ?? Promise.resolve({ data: [], error: null }),
+  ]);
+
+  let publicRows: FleetAvailableVehicle[] = [];
+  let ownerRows: FleetAvailableVehicle[] = [];
+  let publicError: PostgrestError | null = null;
+  let ownerError: PostgrestError | null = null;
+
+  if (publicResult.error) {
+    publicError = publicResult.error;
+    logSupabaseError('public fleet_available_vehicles', publicResult.error);
+  } else {
+    publicRows = (publicResult.data ?? []) as FleetAvailableVehicle[];
+  }
+
+  if (ownerResult.error) {
+    ownerError = ownerResult.error;
+    logSupabaseError('owner fleet_available_vehicles', ownerResult.error);
+  } else {
+    ownerRows = (ownerResult.data ?? []) as FleetAvailableVehicle[];
+  }
+
+  const publicCount = publicRows.length;
+  const ownerCount = ownerRows.length;
+  console.log(`[Fleet] public fleet count: ${publicCount}`);
+  console.log(`[Fleet] owner fleet count: ${ownerCount}`);
+
+  const mergedRows = dedupeFleetRows([...publicRows, ...ownerRows]);
+
+  if (mergedRows.length === 0) {
+    const blockingError = publicError ?? ownerError;
+    if (blockingError) {
+      throw new Error(blockingError.message);
+    }
+    console.log(
+      '[Fleet] No rows returned from fleet_available_vehicles. ' +
+        'Either no owner has published a vehicle yet, ' +
+        'or RLS is blocking the read for this user.'
+    );
+  }
+
+  return {
+    vehicles: mergedRows.map(mapFleetVehicleToVehicle),
+    publicCount,
+    ownerCount,
+  };
 }
 
 /** Fetch + map a single vehicle by id. Returns null when not found. */

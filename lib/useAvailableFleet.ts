@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { useAuth } from './auth';
 import type { Vehicle } from '@/src/data/vehicles';
 import { getAvailableVehicles } from './fleetAvailableVehicles';
 import { getTemporarySharedVehicles, redeemShareCode } from './shareAccess';
@@ -9,9 +10,10 @@ export type FleetStatus = 'loading' | 'ready' | 'error';
 export type RedeemResult = { ok: boolean; message: string };
 
 export type AvailableFleet = {
-  /** Merged list: shared-access vehicles first, then the public fleet. */
+  /** Merged list: shared-access vehicles first, then the Supabase fleet feed. */
   vehicles: Vehicle[];
   publicCount: number;
+  ownerCount: number;
   sharedCount: number;
   status: FleetStatus;
   error: string | null;
@@ -21,17 +23,34 @@ export type AvailableFleet = {
   redeem: (code: string) => Promise<RedeemResult>;
 };
 
+/** Deduplicate scene vehicles by commandVehicleId, falling back to row id. */
+function dedupeVehicles(vehicles: Vehicle[]): Vehicle[] {
+  const seen = new Set<string>();
+  const merged: Vehicle[] = [];
+
+  for (const vehicle of vehicles) {
+    const key = vehicle.commandVehicleId?.trim() || vehicle.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(vehicle);
+  }
+
+  return merged;
+}
+
 /**
  * Loads the renter home feed:
- *   • Public fleet from Supabase (`fleet_available_vehicles`, is_available = true)
+ *   • Public + owner fleet rows from Supabase (`fleet_available_vehicles`)
  *   • Vehicles shared with the renter via redeemed share codes (backend)
  *
- * The public fleet is the primary source — a failure there surfaces an error
- * state. Shared access is best-effort: if the backend is unconfigured or down,
- * we log and still show the public fleet. No mock/fallback vehicles ever.
+ * Shared access is best-effort: if the backend is unconfigured or down,
+ * we log and still show the Supabase fleet. No mock/fallback vehicles ever.
  */
 export function useAvailableFleet(): AvailableFleet {
-  const [publicVehicles, setPublicVehicles] = useState<Vehicle[]>([]);
+  const { userId, isInitialized } = useAuth();
+  const [fleetVehicles, setFleetVehicles] = useState<Vehicle[]>([]);
+  const [publicCount, setPublicCount] = useState(0);
+  const [ownerCount, setOwnerCount] = useState(0);
   const [sharedVehicles, setSharedVehicles] = useState<Vehicle[]>([]);
   const [status, setStatus] = useState<FleetStatus>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -42,16 +61,24 @@ export function useAvailableFleet(): AvailableFleet {
     if (mode === 'refresh') setIsRefreshing(true);
     setError(null);
 
-    // Shared access never blocks the public fleet (best-effort, never throws).
     const sharedPromise = getTemporarySharedVehicles();
 
-    let publicCount = 0;
+    let nextFleetVehicles: Vehicle[] = [];
+    let nextPublicCount = 0;
+    let nextOwnerCount = 0;
+    let loadFailed = false;
+
     try {
-      const pub = await getAvailableVehicles();
-      publicCount = pub.length;
-      setPublicVehicles(pub);
+      const fleet = await getAvailableVehicles();
+      nextFleetVehicles = fleet.vehicles;
+      nextPublicCount = fleet.publicCount;
+      nextOwnerCount = fleet.ownerCount;
+      setFleetVehicles(fleet.vehicles);
+      setPublicCount(fleet.publicCount);
+      setOwnerCount(fleet.ownerCount);
       setStatus('ready');
     } catch (err) {
+      loadFailed = true;
       setError(err instanceof Error ? err.message : 'Could not load vehicles.');
       setStatus('error');
     }
@@ -59,16 +86,23 @@ export function useAvailableFleet(): AvailableFleet {
     const shared = await sharedPromise;
     setSharedVehicles(shared);
 
-    // Safe count logging (no row contents / secrets).
-    console.log(`[Fleet] fleet_available_vehicles count: ${publicCount}`);
+    const finalMergedCount = dedupeVehicles([
+      ...shared,
+      ...(loadFailed ? [] : nextFleetVehicles),
+    ]).length;
+
+    console.log(`[Fleet] public fleet count: ${nextPublicCount}`);
+    console.log(`[Fleet] owner fleet count: ${nextOwnerCount}`);
     console.log(`[Fleet] shared access count: ${shared.length}`);
+    console.log(`[Fleet] final merged vehicle count: ${finalMergedCount}`);
 
     setIsRefreshing(false);
   }, []);
 
   useEffect(() => {
+    if (!isInitialized) return;
     void load('initial');
-  }, [load]);
+  }, [load, isInitialized, userId]);
 
   const refresh = useCallback(() => {
     void load('refresh');
@@ -79,24 +113,24 @@ export function useAvailableFleet(): AvailableFleet {
       try {
         const { message } = await redeemShareCode(code);
 
-        // Refresh BOTH shared access and the public fleet after a successful
-        // redeem. Public fetch failures here are non-fatal to the redeem.
-        const [shared] = await Promise.all([
+        const [shared, fleet] = await Promise.all([
           getTemporarySharedVehicles(),
-          getAvailableVehicles()
-            .then((pub) => setPublicVehicles(pub))
-            .catch((err) =>
-              console.warn(
-                '[Fleet] public refresh after redeem failed:',
-                err instanceof Error ? err.message : err
-              )
-            ),
+          getAvailableVehicles().catch((err) => {
+            console.warn(
+              '[Fleet] fleet refresh after redeem failed:',
+              err instanceof Error ? err.message : err
+            );
+            return null;
+          }),
         ]);
+
+        if (fleet) {
+          setFleetVehicles(fleet.vehicles);
+          setPublicCount(fleet.publicCount);
+          setOwnerCount(fleet.ownerCount);
+        }
         setSharedVehicles(shared);
 
-        // Redeem succeeded but /share/access shows nothing yet — tell the user
-        // clearly instead of silently implying failure. (Response shape is
-        // logged safely inside getTemporarySharedVehicles.)
         if (shared.length === 0) {
           return {
             ok: true,
@@ -115,11 +149,15 @@ export function useAvailableFleet(): AvailableFleet {
     []
   );
 
-  const vehicles = [...sharedVehicles, ...publicVehicles];
+  const vehicles = useMemo(
+    () => dedupeVehicles([...sharedVehicles, ...fleetVehicles]),
+    [sharedVehicles, fleetVehicles]
+  );
 
   return {
     vehicles,
-    publicCount: publicVehicles.length,
+    publicCount,
+    ownerCount,
     sharedCount: sharedVehicles.length,
     status,
     error,

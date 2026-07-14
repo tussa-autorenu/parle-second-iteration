@@ -14,9 +14,10 @@ import { VehicleListScene } from './VehicleListScene';
  * decides which scene is currently mounted. Each scene receives a small set
  * of event callbacks; it never knows about the other scenes.
  *
- * Vehicle data is loaded once here from Supabase (`fleet_available_vehicles`)
- * and handed down to the scenes, so the list, detail, and ride screens all
- * render the same live row that the renter tapped.
+ * Vehicle data is loaded once here from Supabase (`fleet_available_vehicles`,
+ * public + owner rows) and shared access, then handed down to the scenes so
+ * the list, detail, and ride screens all render the same live row the renter
+ * tapped.
  */
 export function Flow() {
   const [state, dispatch] = useReducer(flowReducer, INITIAL_FLOW);
@@ -24,6 +25,7 @@ export function Flow() {
   const {
     vehicles,
     publicCount,
+    ownerCount,
     sharedCount,
     status,
     error,
@@ -47,6 +49,7 @@ export function Flow() {
         <VehicleListScene
           vehicles={vehicles}
           publicCount={publicCount}
+          ownerCount={ownerCount}
           sharedCount={sharedCount}
           status={status}
           error={error}

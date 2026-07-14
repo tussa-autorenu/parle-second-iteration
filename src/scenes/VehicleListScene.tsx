@@ -21,6 +21,7 @@ import { VehicleCard } from '@/src/components/VehicleCard';
 type Props = {
   vehicles: Vehicle[];
   publicCount: number;
+  ownerCount: number;
   sharedCount: number;
   status: FleetStatus;
   error: string | null;
@@ -48,8 +49,8 @@ const CARD_STAGGER_MS = 100;
  *   • Header: Parlé "P" mark + "PARLE" wordmark (regular weight), left-aligned.
  *     Tap resets the flow; long-press signs out.
  *   • Share-code entry: "Have a share code?" → input + Redeem (backend-wired).
- *   • Body: live vehicle cards — shared-access vehicles + the public fleet from
- *     Supabase — with pull-to-refresh.
+ *   • Body: live vehicle cards — shared-access vehicles + the public/owner fleet
+ *     from Supabase — with pull-to-refresh.
  */
 export function VehicleListScene({
   vehicles,
