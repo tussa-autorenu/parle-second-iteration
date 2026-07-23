@@ -86,15 +86,23 @@ export function useAvailableFleet(): AvailableFleet {
     const shared = await sharedPromise;
     setSharedVehicles(shared);
 
-    const finalMergedCount = dedupeVehicles([
+    const merged = dedupeVehicles([
       ...shared,
       ...(loadFailed ? [] : nextFleetVehicles),
-    ]).length;
+    ]);
+    const accessBreakdown = merged.reduce(
+      (acc, v) => {
+        acc[v.accessType] += 1;
+        return acc;
+      },
+      { owner: 0, shared: 0, public: 0 }
+    );
 
-    console.log(`[Fleet] public fleet count: ${nextPublicCount}`);
-    console.log(`[Fleet] owner fleet count: ${nextOwnerCount}`);
-    console.log(`[Fleet] shared access count: ${shared.length}`);
-    console.log(`[Fleet] final merged vehicle count: ${finalMergedCount}`);
+    console.log(`[Fleet] owned vehicle count: ${nextOwnerCount}`);
+    console.log(`[Fleet] public vehicle count: ${nextPublicCount}`);
+    console.log(`[Fleet] shared vehicle count: ${shared.length}`);
+    console.log(`[Fleet] final merged vehicle count: ${merged.length}`);
+    console.log('[Fleet] final access-type breakdown:', accessBreakdown);
 
     setIsRefreshing(false);
   }, []);

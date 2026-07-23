@@ -60,6 +60,20 @@ FOR SELECT
 TO authenticated
 USING (is_available = true);
 
+-- Owners must be able to read EVERY vehicle they own, including ones that are
+-- not currently published (is_available = false). RLS SELECT policies are
+-- OR-combined, so this widens visibility only for the row's owner and does not
+-- expose anyone else's unavailable vehicles. Without this policy the renter app
+-- silently receives zero owned rows for unpublished vehicles.
+DROP POLICY IF EXISTS "Owners can read their own fleet vehicles"
+ON public.fleet_available_vehicles;
+
+CREATE POLICY "Owners can read their own fleet vehicles"
+ON public.fleet_available_vehicles
+FOR SELECT
+TO authenticated
+USING (owner_user_id = auth.uid());
+
 DROP POLICY IF EXISTS "Owners can insert their own fleet vehicles"
 ON public.fleet_available_vehicles;
 

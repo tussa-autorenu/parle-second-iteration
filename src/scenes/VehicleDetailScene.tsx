@@ -137,12 +137,15 @@ export function VehicleDetailScene({ vehicle, onBack, onStartRide }: Props) {
   }
 
   const isShared = vehicle.source === 'shared';
+  const isOwner = vehicle.accessType === 'owner';
 
-  const subtitle = isShared
-    ? 'Shared access'
-    : vehicle.distanceMi == null
-      ? `${vehicle.color}  ·  Nearby`
-      : `${vehicle.color}  ·  ${vehicle.distanceMi.toFixed(1)} mi away`;
+  const subtitle = isOwner
+    ? `${vehicle.color}  ·  Your Vehicle`
+    : isShared
+      ? 'Shared access'
+      : vehicle.distanceMi == null
+        ? `${vehicle.color}  ·  Nearby`
+        : `${vehicle.color}  ·  ${vehicle.distanceMi.toFixed(1)} mi away`;
 
   // Shared-access host + duration details (never fabricated).
   const grantedLabel = formatAccessDuration(vehicle.access?.durationMinutes);
@@ -369,7 +372,7 @@ export function VehicleDetailScene({ vehicle, onBack, onStartRide }: Props) {
                 className="font-space-grotesk-bold text-white"
                 style={{ fontSize: 17 }}
               >
-                Unlock & Start Ride
+                {isOwner ? 'Unlock & Drive' : 'Unlock & Start Ride'}
               </Text>
             </Pressable>
           </Animated.View>

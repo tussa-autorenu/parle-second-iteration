@@ -33,6 +33,11 @@ async function sendCommand(
   vehicleId: string | null | undefined,
   command: VehicleCommand
 ): Promise<CommandResult> {
+  // Safe diagnostic — never logs the identifier value, only whether it exists.
+  console.log(
+    `[Command] ${command} → command vehicle identifier exists: ${!!vehicleId}`
+  );
+
   if (!isApiConfigured) {
     return {
       ok: false,

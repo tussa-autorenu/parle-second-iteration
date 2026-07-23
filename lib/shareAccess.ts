@@ -117,6 +117,7 @@ function mapAccessToVehicle(record: TemporaryAccessRecord, index: number): Vehic
   return {
     id: `shared:${record.vehicleId ?? record.id ?? index}`,
     source: 'shared',
+    accessType: 'shared',
     isSharedAccess: true,
     commandVehicleId,
     access: { startsAt, expiresAt, durationMinutes, shareCode },

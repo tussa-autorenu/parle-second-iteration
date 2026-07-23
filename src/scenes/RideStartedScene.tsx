@@ -95,11 +95,14 @@ export function RideStartedScene({ vehicle, rideStartedAt, onEndRide }: Props) {
 
   // ---- Command state ----------------------------------------------------
   const commandVehicleId = vehicle?.commandVehicleId ?? null;
+  // The backend command routes need the real vehicle identifier. Without it we
+  // can't safely send anything, so controls are disabled (never faked).
+  const canCommand = !!commandVehicleId;
   const [busy, setBusy] = useState<VehicleCommand | 'end' | null>(null);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
 
   const runCommand = async (command: VehicleCommand) => {
-    if (busy) return;
+    if (busy || !canCommand) return;
     setBusy(command);
     setMessage(null);
     const fn =
@@ -115,6 +118,11 @@ export function RideStartedScene({ vehicle, rideStartedAt, onEndRide }: Props) {
 
   const handleEndRide = async () => {
     if (busy) return;
+    // No command identifier → we can't lock this vehicle; end without faking it.
+    if (!canCommand) {
+      onEndRide();
+      return;
+    }
     setBusy('end');
     setMessage(null);
     // Always attempt to lock the vehicle before ending — never end silently.
@@ -247,24 +255,35 @@ export function RideStartedScene({ vehicle, rideStartedAt, onEndRide }: Props) {
               icon={<LockIcon />}
               label="Lock"
               busy={busy === 'lock'}
-              disabled={busy !== null}
+              disabled={busy !== null || !canCommand}
               onPress={() => runCommand('lock')}
             />
             <CommandTile
               icon={<LockOpenIcon />}
               label="Unlock"
               busy={busy === 'unlock'}
-              disabled={busy !== null}
+              disabled={busy !== null || !canCommand}
               onPress={() => runCommand('unlock')}
             />
             <CommandTile
               icon={<BoltIcon />}
               label="Ready Drive"
               busy={busy === 'ready-drive'}
-              disabled={busy !== null}
+              disabled={busy !== null || !canCommand}
               onPress={() => runCommand('ready-drive')}
             />
           </View>
+
+          {/* Controls need the real backend vehicle id — say so plainly. */}
+          {!canCommand ? (
+            <Text
+              className="font-space-grotesk mt-3 text-center"
+              style={{ fontSize: 13, lineHeight: 18, color: '#B91C1C' }}
+            >
+              Controls are unavailable for this vehicle: it’s missing a connected
+              vehicle identifier.
+            </Text>
+          ) : null}
 
           {/* Inline command result / error */}
           {message ? (

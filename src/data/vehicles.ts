@@ -18,10 +18,28 @@ export type VehicleColor = 'White' | 'Red' | 'Black';
  */
 export type VehicleSource = 'public' | 'shared';
 
+/**
+ * Normalized access relationship between the signed-in user and a vehicle:
+ *   • 'owner'  → the user owns this vehicle (fleet_available_vehicles.owner_user_id
+ *                === auth user id). Shown regardless of is_available; full controls.
+ *   • 'shared' → temporary access granted via a redeemed share code (backend).
+ *   • 'public' → a publicly available fleet vehicle the user neither owns nor
+ *                has been directly granted.
+ *
+ * Command authorization is ALWAYS enforced by the backend (x-triggered-by +
+ * x-parle-api-key); this field only drives labels and which details are shown.
+ */
+export type VehicleAccessType = 'owner' | 'shared' | 'public';
+
 export type Vehicle = {
   id: string;
   /** Defaults to 'public'. */
   source: VehicleSource;
+  /**
+   * Normalized access type ('owner' | 'shared' | 'public'). Owned vehicles
+   * resolve to 'owner' even when is_available is false.
+   */
+  accessType: VehicleAccessType;
   /** Convenience mirror of `source === 'shared'`. */
   isSharedAccess: boolean;
   /**

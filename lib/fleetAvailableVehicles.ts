@@ -145,46 +145,61 @@ export function getVehicleColor(row: FleetAvailableVehicle): VehicleColor {
 /**
  * Convert a Supabase fleet row into the `Vehicle` object the renter scenes
  * were originally written against, so the UI is byte-for-byte the prototype.
+ *
+ * When `currentUserId` matches the row's `owner_user_id`, the vehicle resolves
+ * to `accessType: 'owner'`: it drops rental pricing, is labelled "Your Vehicle",
+ * and shows the "You / Owner" identity instead of the generic host.
  */
-export function mapFleetVehicleToVehicle(row: FleetAvailableVehicle): Vehicle {
+export function mapFleetVehicleToVehicle(
+  row: FleetAvailableVehicle,
+  currentUserId?: string | null
+): Vehicle {
+  const isOwner = !!currentUserId && row.owner_user_id === currentUserId;
+
   return {
     id: row.id,
     source: 'public',
+    accessType: isOwner ? 'owner' : 'public',
     isSharedAccess: false,
-    // Command endpoints key off the real vehicle id / VIN, not the fleet row id.
+    // Command endpoints key off the real backend vehicle id (source_vehicle_id,
+    // written by the fleet web app), not the Supabase fleet row id.
     commandVehicleId: row.source_vehicle_id ?? row.vin ?? row.id,
     access: null,
     model: getVehicleTitle(row),
     color: getVehicleColor(row),
     distanceMi: row.distance_miles == null ? null : Number(row.distance_miles),
     batteryPct: row.battery_level == null ? null : Math.round(Number(row.battery_level)),
-    hourlyRate: row.hourly_rate == null ? null : Number(row.hourly_rate),
+    // Never surface rental pricing for a vehicle the user owns.
+    hourlyRate: isOwner ? null : row.hourly_rate == null ? null : Number(row.hourly_rate),
     rangeMi: row.range_miles == null ? null : Math.round(Number(row.range_miles)),
     seats: DEFAULT_SEATS,
     isLocked: row.is_locked,
     features: [...DEFAULT_FEATURES],
-    owner: {
-      name: 'Parlé Host',
-      role: 'Verified fleet owner',
-      email: null,
-    },
+    owner: isOwner
+      ? { name: 'You', role: 'Owner', email: null }
+      : { name: 'Parlé Host', role: 'Verified fleet owner', email: null },
   };
 }
 
 /**
  * Load the renter fleet feed from Supabase:
- *   • Public rows (is_available = true)
- *   • Owner rows for the signed-in user (owner_user_id = auth user id)
+ *   • Owner rows for the signed-in user (owner_user_id = auth user id) — returned
+ *     regardless of is_available so an owner always sees every vehicle they own.
+ *   • Public rows (is_available = true).
  *
- * Merges and deduplicates before mapping into the scene `Vehicle` shape.
- * Surfaces an error only when every query fails and no rows are returned.
+ * Owner rows are merged FIRST so a vehicle the user both owns and has published
+ * resolves to `accessType: 'owner'` after de-duplication (by source_vehicle_id,
+ * falling back to row id). Surfaces an error only when a query genuinely fails
+ * AND nothing could be read — an RLS error is never silently swallowed into an
+ * empty list.
  */
 export async function getAvailableVehicles(): Promise<FleetLoadResult> {
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  const userIdExists = !!user?.id;
-  console.log(`[Fleet] current user id exists: ${userIdExists}`);
+  const userId = user?.id ?? null;
+  console.log(`[Fleet] authenticated user exists: ${!!userId}`);
+  console.log(`[Fleet] authenticated user id: ${userId ?? '(none)'}`);
 
   const publicPromise = supabase
     .from('fleet_available_vehicles')
@@ -192,11 +207,15 @@ export async function getAvailableVehicles(): Promise<FleetLoadResult> {
     .eq('is_available', true)
     .order('created_at', { ascending: false });
 
-  const ownerPromise = user?.id
+  // Owner query intentionally has NO is_available filter — owners see their
+  // vehicles even when unpublished. This relies on an RLS SELECT policy that
+  // allows `owner_user_id = auth.uid()`; without it, RLS silently filters the
+  // owner's unavailable rows (see fleet_available_vehicles.sql).
+  const ownerPromise = userId
     ? supabase
         .from('fleet_available_vehicles')
         .select(SELECT_COLUMNS)
-        .eq('owner_user_id', user.id)
+        .eq('owner_user_id', userId)
         .order('created_at', { ascending: false })
     : null;
 
@@ -224,36 +243,55 @@ export async function getAvailableVehicles(): Promise<FleetLoadResult> {
     ownerRows = (ownerResult.data ?? []) as FleetAvailableVehicle[];
   }
 
-  const publicCount = publicRows.length;
   const ownerCount = ownerRows.length;
-  console.log(`[Fleet] public fleet count: ${publicCount}`);
-  console.log(`[Fleet] owner fleet count: ${ownerCount}`);
+  const publicCount = publicRows.length;
+  console.log(`[Fleet] owned vehicle count: ${ownerCount}`);
+  console.log(`[Fleet] public vehicle count: ${publicCount}`);
 
-  const mergedRows = dedupeFleetRows([...publicRows, ...ownerRows]);
+  // Owner-first so owned vehicles win de-duplication and keep accessType 'owner'.
+  const mergedRows = dedupeFleetRows([...ownerRows, ...publicRows]);
+  const vehicles = mergedRows.map((row) => mapFleetVehicleToVehicle(row, userId));
+
+  // Per-vehicle access-type resolution (safe: ids only, no secrets).
+  vehicles.forEach((v) => {
+    console.log(
+      `[Fleet] vehicle ${v.id} → accessType: ${v.accessType} ` +
+        `(commandVehicleId exists: ${!!v.commandVehicleId})`
+    );
+  });
 
   if (mergedRows.length === 0) {
+    // Never convert a real query failure into a silent empty list.
     const blockingError = publicError ?? ownerError;
     if (blockingError) {
       throw new Error(blockingError.message);
     }
     console.log(
       '[Fleet] No rows returned from fleet_available_vehicles. ' +
-        'Either no owner has published a vehicle yet, ' +
-        'or RLS is blocking the read for this user.'
+        'Either no owner has published a vehicle yet, or an RLS SELECT policy ' +
+        'is filtering rows for this user (owners need a policy allowing ' +
+        'owner_user_id = auth.uid()).'
+    );
+  } else if (userId && ownerCount === 0 && !ownerError) {
+    // Rows exist but none came back as owned — likely the missing owner-read
+    // RLS policy silently filtering the owner's unavailable vehicles.
+    console.log(
+      '[Fleet] No owned vehicles returned for the signed-in user. If this user ' +
+        'has vehicles in fleet_available_vehicles, add/verify the RLS SELECT ' +
+        'policy: USING (owner_user_id = auth.uid()).'
     );
   }
 
-  return {
-    vehicles: mergedRows.map(mapFleetVehicleToVehicle),
-    publicCount,
-    ownerCount,
-  };
+  return { vehicles, publicCount, ownerCount };
 }
 
 /** Fetch + map a single vehicle by id. Returns null when not found. */
 export async function getAvailableVehicleById(
   vehicleId: string
 ): Promise<Vehicle | null> {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
   const row = await getAvailableFleetVehicleById(vehicleId);
-  return row ? mapFleetVehicleToVehicle(row) : null;
+  return row ? mapFleetVehicleToVehicle(row, user?.id ?? null) : null;
 }
