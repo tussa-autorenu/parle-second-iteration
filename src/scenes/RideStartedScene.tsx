@@ -17,8 +17,9 @@ import Animated, {
 import { StatusBar } from 'expo-status-bar';
 
 import { BoltIcon, CheckIcon, LockIcon, LockOpenIcon } from '@/src/components/Icons';
-import type { Vehicle } from '@/src/data/vehicles';
+import { getCommandBlockReason, type Vehicle } from '@/src/data/vehicles';
 import {
+  fetchVehicleTelemetry,
   lockVehicle,
   readyDriveVehicle,
   unlockVehicle,
@@ -95,11 +96,30 @@ export function RideStartedScene({ vehicle, rideStartedAt, onEndRide }: Props) {
 
   // ---- Command state ----------------------------------------------------
   const commandVehicleId = vehicle?.commandVehicleId ?? null;
-  // The backend command routes need the real vehicle identifier. Without it we
-  // can't safely send anything, so controls are disabled (never faked).
-  const canCommand = !!commandVehicleId;
+  const accessType = vehicle?.accessType;
+  // Frontend UX gate ONLY — the backend still verifies ownership / valid share
+  // on every request. owner → allowed; shared → allowed while unexpired;
+  // public → viewing never grants command access.
+  const blockReason = getCommandBlockReason(vehicle);
+  const canCommand = blockReason === null;
   const [busy, setBusy] = useState<VehicleCommand | 'end' | null>(null);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  // Live-ish lock state, seeded from the row and updated after commands so the
+  // UI reflects the real result (best-effort telemetry refresh).
+  const [liveLocked, setLiveLocked] = useState<boolean | null>(
+    vehicle?.isLocked ?? null
+  );
+  const [liveBatteryPct, setLiveBatteryPct] = useState<number | null>(
+    vehicle?.batteryPct ?? null
+  );
+
+  // Refresh telemetry after a state-changing command and reconcile local state.
+  const refreshTelemetry = async () => {
+    const t = await fetchVehicleTelemetry(commandVehicleId);
+    if (!t) return;
+    if (typeof t.isLocked === 'boolean') setLiveLocked(t.isLocked);
+    if (typeof t.batteryLevel === 'number') setLiveBatteryPct(Math.round(t.batteryLevel));
+  };
 
   const runCommand = async (command: VehicleCommand) => {
     if (busy || !canCommand) return;
@@ -111,14 +131,21 @@ export function RideStartedScene({ vehicle, rideStartedAt, onEndRide }: Props) {
         : command === 'unlock'
           ? unlockVehicle
           : readyDriveVehicle;
-    const result = await fn(commandVehicleId);
+    const result = await fn(commandVehicleId, { accessType });
     setMessage({ ok: result.ok, text: result.message });
+    if (result.ok) {
+      // Optimistically reflect the new lock state, then reconcile from telemetry.
+      if (command === 'lock') setLiveLocked(true);
+      if (command === 'unlock') setLiveLocked(false);
+      if (command === 'lock' || command === 'unlock') await refreshTelemetry();
+    }
     setBusy(null);
   };
 
   const handleEndRide = async () => {
     if (busy) return;
-    // No command identifier → we can't lock this vehicle; end without faking it.
+    // Can't command (public view / expired share / missing id) → end without
+    // faking a lock.
     if (!canCommand) {
       onEndRide();
       return;
@@ -126,8 +153,9 @@ export function RideStartedScene({ vehicle, rideStartedAt, onEndRide }: Props) {
     setBusy('end');
     setMessage(null);
     // Always attempt to lock the vehicle before ending — never end silently.
-    const result = await lockVehicle(commandVehicleId);
+    const result = await lockVehicle(commandVehicleId, { accessType });
     if (result.ok) {
+      setLiveLocked(true);
       setBusy(null);
       onEndRide();
     } else {
@@ -141,7 +169,17 @@ export function RideStartedScene({ vehicle, rideStartedAt, onEndRide }: Props) {
 
   const modelLabel = vehicle?.model ?? 'Tesla';
   const colorLabel = vehicle?.color ?? 'White';
-  const batteryLabel = vehicle?.batteryPct == null ? '—' : `${vehicle.batteryPct}%`;
+  const batteryLabel = liveBatteryPct == null ? '—' : `${liveBatteryPct}%`;
+
+  // Plain-language reason the controls are disabled (null when they're enabled).
+  const disabledMessage =
+    blockReason === 'no-identifier'
+      ? 'Controls are unavailable for this vehicle: it’s missing a connected vehicle identifier.'
+      : blockReason === 'public'
+        ? 'You’re viewing this vehicle. Command access requires ownership or a valid share code.'
+        : blockReason === 'expired-share'
+          ? 'Your shared access to this vehicle has expired. Ask the owner for a new share code.'
+          : null;
 
   return (
     <SafeAreaView className="flex-1 bg-white" edges={['top', 'bottom']}>
@@ -236,10 +274,17 @@ export function RideStartedScene({ vehicle, rideStartedAt, onEndRide }: Props) {
             TRIP #{tripId}
           </Text>
 
-          {/* Live stat tiles — duration + battery only */}
+          {/* Live stat tiles — duration + battery + lock state (updated after
+              a successful Lock / Unlock command). */}
           <View className="flex-row gap-2 mt-4">
             <StatTile label="DURATION" value={formatElapsed(elapsedMs)} />
             <StatTile label="BATTERY" value={batteryLabel} />
+            <StatTile
+              label="LOCK"
+              value={
+                liveLocked == null ? '—' : liveLocked ? 'Locked' : 'Unlocked'
+              }
+            />
           </View>
         </Animated.View>
 
@@ -274,14 +319,14 @@ export function RideStartedScene({ vehicle, rideStartedAt, onEndRide }: Props) {
             />
           </View>
 
-          {/* Controls need the real backend vehicle id — say so plainly. */}
-          {!canCommand ? (
+          {/* Explain plainly why controls are disabled (missing id / public
+              view / expired share). */}
+          {disabledMessage ? (
             <Text
               className="font-space-grotesk mt-3 text-center"
               style={{ fontSize: 13, lineHeight: 18, color: '#B91C1C' }}
             >
-              Controls are unavailable for this vehicle: it’s missing a connected
-              vehicle identifier.
+              {disabledMessage}
             </Text>
           ) : null}
 

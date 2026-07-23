@@ -206,6 +206,9 @@ export function mapFleetVehicleToVehicle(
     // Command endpoints key off the real backend vehicle id (source_vehicle_id,
     // written by the fleet web app), not the Supabase fleet row id.
     commandVehicleId: row.source_vehicle_id ?? row.vin ?? row.id,
+    sourceVehicleId: row.source_vehicle_id ?? null,
+    ownerUserId: row.owner_user_id ?? null,
+    vin: row.vin ?? null,
     access: null,
     model: getVehicleTitle(row),
     color: getVehicleColor(row),

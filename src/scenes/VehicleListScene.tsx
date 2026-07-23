@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -31,8 +32,8 @@ type Props = {
   onSelectVehicle: (id: string) => void;
   /** Tapping the Parlé logo resets the flow back to Loading. */
   onLogoTap: () => void;
-  /** Long-press the logo to sign out. */
-  onSignOut: () => void;
+  /** Sign out — clears the session and returns to the login screen. */
+  onSignOut: () => void | Promise<void>;
 };
 
 // ---- Entry choreography (option C: header → pause → staggered cards) --
@@ -63,25 +64,53 @@ export function VehicleListScene({
   onLogoTap,
   onSignOut,
 }: Props) {
+  const handleLogout = () => {
+    Alert.alert(
+      'Log out',
+      'Log out of Parlé? Your vehicles will be cleared until you sign back in.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Log out',
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              try {
+                await onSignOut();
+              } catch (err) {
+                Alert.alert(
+                  'Couldn’t log out',
+                  err instanceof Error
+                    ? err.message
+                    : 'Something went wrong signing out. Please try again.'
+                );
+              }
+            })();
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <SafeAreaView className="flex-1 bg-white" edges={['top']}>
       <StatusBar style="dark" />
 
       {/* ---- Header --------------------------------------------------- */}
       <Animated.View
-        className="px-6 pt-4 pb-2"
+        className="px-6 pt-4 pb-2 flex-row items-center justify-between"
         entering={FadeInUp.duration(HEADER_ENTRY_MS).easing(
           Easing.out(Easing.cubic)
         )}
       >
         {/* Parlé "P" mark + uppercase wordmark (regular weight). Tap resets the
-            flow; long-press signs out. */}
+            flow; long-press signs out (same as the visible Log out button). */}
         <Pressable
           onPress={onLogoTap}
-          onLongPress={onSignOut}
+          onLongPress={handleLogout}
           delayLongPress={600}
           hitSlop={8}
-          className="flex-row items-center gap-2 self-start"
+          className="flex-row items-center gap-2"
         >
           <ParleLogo width={31} height={30} />
           <Text
@@ -89,6 +118,22 @@ export function VehicleListScene({
             style={{ fontSize: 26, letterSpacing: 0.5 }}
           >
             PARLE
+          </Text>
+        </Pressable>
+
+        {/* Visible Logout action — clears the session and returns to login. */}
+        <Pressable
+          onPress={handleLogout}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Log out"
+          className="rounded-full border border-parle-desat-3 px-4 py-2"
+        >
+          <Text
+            className="font-space-grotesk-medium text-parle-desat-7"
+            style={{ fontSize: 13 }}
+          >
+            Log out
           </Text>
         </Pressable>
       </Animated.View>

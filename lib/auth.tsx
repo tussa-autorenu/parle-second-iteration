@@ -147,12 +147,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
+    console.log('[Auth] logout started');
+    // Clear locally first so the UI returns to login immediately and any cached
+    // vehicle state (owned/public/shared/selected) unmounts with <Flow />.
     setSession(null);
-    try {
-      await supabase.auth.signOut();
-    } catch (err) {
-      console.warn('[Auth] signOut error:', err);
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      console.warn('[Auth] logout error:', error.message);
+      // Session is already cleared locally; surface the error so the caller can
+      // tell the user, but the user is effectively signed out on this device.
+      throw error;
     }
+    console.log('[Auth] logout completed');
   }, []);
 
   const value = useMemo<AuthContextValue>(

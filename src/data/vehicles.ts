@@ -43,10 +43,21 @@ export type Vehicle = {
   /** Convenience mirror of `source === 'shared'`. */
   isSharedAccess: boolean;
   /**
-   * Identifier the backend command endpoints expect (VIN / source vehicle id).
-   * Used by lib/vehicleCommands.ts for Lock / Unlock / Ready Drive.
+   * Identifier the backend command endpoints expect (source_vehicle_id, falling
+   * back to VIN / row id). Used by lib/vehicleCommands.ts for the `:id` path
+   * segment of Lock / Unlock / Ready Drive. This is NOT the Supabase row id.
    */
   commandVehicleId: string | null;
+  /**
+   * Raw `source_vehicle_id` from the fleet row (the backend's vehicle id). Kept
+   * distinct from the Supabase row `id` so we never send the wrong one to a
+   * command route. Null for shared vehicles that only expose a backend id.
+   */
+  sourceVehicleId: string | null;
+  /** `owner_user_id` from the fleet row (null for shared / unknown). */
+  ownerUserId: string | null;
+  /** Vehicle VIN when the backend/DB exposes it (null when unknown). */
+  vin: string | null;
   /** Temporary access window for shared vehicles (null for the public fleet). */
   access: VehicleAccess | null;
   /** Display title — real display_name / model, falling back to "Tesla Vehicle". */
@@ -136,6 +147,55 @@ export function formatTimeRemaining(
   const m = totalMin % 60;
   if (h === 0) return `${m}m`;
   return `${h}h ${m}m`;
+}
+
+/* ------------------------------------------------------------------ */
+/* Command access (frontend gate only — backend is the real boundary). */
+/* ------------------------------------------------------------------ */
+
+/** Why a vehicle can't be controlled from the UI (null when it can). */
+export type CommandBlockReason = 'no-identifier' | 'public' | 'expired-share';
+
+/**
+ * Decide whether the UI should let the user issue commands (Lock / Unlock /
+ * Ready Drive) for a vehicle. This is ONLY a UX gate — the Parlé backend
+ * independently verifies ownership or a valid, unexpired share on every call.
+ *
+ * Rules (per product spec):
+ *   • owner  → always allowed (needs a command identifier)
+ *   • shared → allowed only while the share window is still valid
+ *   • public → viewing alone never grants command access
+ */
+export function getCommandBlockReason(
+  vehicle: Vehicle | null | undefined,
+  now: number = Date.now()
+): CommandBlockReason | null {
+  if (!vehicle) return 'no-identifier';
+  if (!vehicle.commandVehicleId) return 'no-identifier';
+
+  switch (vehicle.accessType) {
+    case 'owner':
+      return null;
+    case 'shared': {
+      const expiresAt = vehicle.access?.expiresAt
+        ? Date.parse(vehicle.access.expiresAt)
+        : NaN;
+      // Unknown expiry → allow and let the backend decide; known + past → block.
+      if (!Number.isNaN(expiresAt) && expiresAt <= now) return 'expired-share';
+      return null;
+    }
+    case 'public':
+    default:
+      return 'public';
+  }
+}
+
+/** Convenience boolean wrapper around {@link getCommandBlockReason}. */
+export function canControlVehicle(
+  vehicle: Vehicle | null | undefined,
+  now: number = Date.now()
+): boolean {
+  return getCommandBlockReason(vehicle, now) === null;
 }
 
 /**

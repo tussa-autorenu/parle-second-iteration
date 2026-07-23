@@ -32,6 +32,24 @@ type Envelope<T> =
   | { ok: true; data: T }
   | { ok: false; error?: { reason?: string; message?: string; details?: unknown } };
 
+/**
+ * Error thrown by {@link apiRequest} for transport failures and non-2xx / `{ ok:
+ * false }` responses. Carries the HTTP `status` and the backend `reason` code so
+ * callers can surface a useful message and log diagnostics. `status === 0` means
+ * the request never reached the backend (network / offline).
+ */
+export class ApiClientError extends Error {
+  status: number;
+  reason: string | null;
+
+  constructor(message: string, status: number, reason: string | null = null) {
+    super(message);
+    this.name = 'ApiClientError';
+    this.status = status;
+    this.reason = reason;
+  }
+}
+
 export async function getAuthContext(): Promise<{ token: string | null; userId: string | null }> {
   const { data } = await supabase.auth.getSession();
   return {
@@ -94,7 +112,11 @@ export async function apiRequest<T>(
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch {
-    throw new Error('Can’t reach Parlé right now. Check your connection and try again.');
+    throw new ApiClientError(
+      'Can’t reach Parlé right now. Check your connection and try again.',
+      0,
+      'network_error'
+    );
   }
 
   if (res.status === 204) return undefined as T;
@@ -110,17 +132,20 @@ export async function apiRequest<T>(
   }
 
   if (!res.ok || (payload && payload.ok === false)) {
-    // Safe backend diagnostics — status + a short body preview so we can tell
-    // auth/session issues apart from a missing key. No request secrets here.
+    const reason =
+      (payload && payload.ok === false && payload.error?.reason) || null;
+    // Safe backend diagnostics — status + reason + a short body preview so we can
+    // tell auth/session issues apart from a missing key. No request secrets here.
     console.warn('[API] request failed', {
       path,
       status: res.status,
+      reason: reason ?? '(none)',
       bodyPreview: text ? text.slice(0, 200) : '(empty body)',
     });
     const message =
       (payload && payload.ok === false && payload.error?.message) ||
       `Request to ${path} failed (${res.status}).`;
-    throw new Error(message);
+    throw new ApiClientError(message, res.status, reason);
   }
 
   if (payload && typeof payload === 'object' && 'data' in payload) {
