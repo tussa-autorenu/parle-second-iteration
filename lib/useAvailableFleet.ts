@@ -48,6 +48,11 @@ function dedupeVehicles(vehicles: Vehicle[]): Vehicle[] {
  */
 export function useAvailableFleet(): AvailableFleet {
   const { userId, isInitialized } = useAuth();
+
+  useEffect(() => {
+    console.log('[Fleet] hook mounted');
+  }, []);
+
   const [fleetVehicles, setFleetVehicles] = useState<Vehicle[]>([]);
   const [publicCount, setPublicCount] = useState(0);
   const [ownerCount, setOwnerCount] = useState(0);
@@ -61,6 +66,7 @@ export function useAvailableFleet(): AvailableFleet {
     if (mode === 'refresh') setIsRefreshing(true);
     setError(null);
 
+    console.log(`[Fleet] fetch started (mode: ${mode})`);
     const sharedPromise = getTemporarySharedVehicles();
 
     let nextFleetVehicles: Vehicle[] = [];
@@ -73,12 +79,21 @@ export function useAvailableFleet(): AvailableFleet {
       nextFleetVehicles = fleet.vehicles;
       nextPublicCount = fleet.publicCount;
       nextOwnerCount = fleet.ownerCount;
+      // raw = pre-dedupe rows across both queries; normalized = mapped Vehicles.
+      console.log(
+        `[Fleet] raw row count: ${fleet.ownerCount + fleet.publicCount}`
+      );
+      console.log(`[Fleet] normalized row count: ${fleet.vehicles.length}`);
       setFleetVehicles(fleet.vehicles);
       setPublicCount(fleet.publicCount);
       setOwnerCount(fleet.ownerCount);
       setStatus('ready');
     } catch (err) {
       loadFailed = true;
+      console.warn(
+        '[Fleet] fetch failed:',
+        err instanceof Error ? err.message : err
+      );
       setError(err instanceof Error ? err.message : 'Could not load vehicles.');
       setStatus('error');
     }
@@ -108,7 +123,15 @@ export function useAvailableFleet(): AvailableFleet {
   }, []);
 
   useEffect(() => {
-    if (!isInitialized) return;
+    console.log('[Fleet] auth state:', {
+      isInitialized,
+      userIdAvailable: !!userId,
+    });
+    // Never let loading "finish" before the session resolves — wait for auth.
+    if (!isInitialized) {
+      console.log('[Fleet] auth still loading — deferring fetch');
+      return;
+    }
     void load('initial');
   }, [load, isInitialized, userId]);
 
@@ -157,10 +180,16 @@ export function useAvailableFleet(): AvailableFleet {
     []
   );
 
-  const vehicles = useMemo(
-    () => dedupeVehicles([...sharedVehicles, ...fleetVehicles]),
-    [sharedVehicles, fleetVehicles]
-  );
+  // Merge priority: owner > shared > public. Owned vehicles are listed first so
+  // they win de-duplication (by commandVehicleId / source_vehicle_id, then id)
+  // and always resolve to accessType 'owner'.
+  const vehicles = useMemo(() => {
+    const owned = fleetVehicles.filter((v) => v.accessType === 'owner');
+    const publicOnly = fleetVehicles.filter((v) => v.accessType !== 'owner');
+    const merged = dedupeVehicles([...owned, ...sharedVehicles, ...publicOnly]);
+    console.log(`[Fleet] final state / render vehicle count: ${merged.length}`);
+    return merged;
+  }, [sharedVehicles, fleetVehicles]);
 
   return {
     vehicles,

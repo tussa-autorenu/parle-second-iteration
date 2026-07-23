@@ -48,6 +48,48 @@ function logSupabaseError(context: string, error: PostgrestError): void {
   });
 }
 
+/**
+ * DEV diagnostic — read EVERY row the current session can see (no filters) and
+ * log counts + a minimal, non-sensitive row shape. Because RLS applies, this
+ * count equals the union of all SELECT policies for this user (owned + public).
+ * If it is 0 while the DB has rows, RLS is filtering everything for this user.
+ *
+ * Never logs keys, tokens, or private Tesla data.
+ */
+export async function logReadableFleetRows(userId: string | null): Promise<void> {
+  const { data, error } = await supabase
+    .from('fleet_available_vehicles')
+    .select('*');
+
+  if (error) {
+    // Surface the exact error — never swallow it into a silent empty list.
+    console.warn('[Fleet][diag] unfiltered read error:', {
+      message: error.message,
+      code: error.code,
+      details: error.details,
+      hint: error.hint,
+    });
+    return;
+  }
+
+  const rows = (data ?? []) as FleetAvailableVehicle[];
+  console.log(`[Fleet][diag] readable row count (no filter): ${rows.length}`);
+  rows.forEach((r) => {
+    console.log('[Fleet][diag] row', {
+      id: r.id,
+      owner_user_id: r.owner_user_id,
+      source_vehicle_id: r.source_vehicle_id,
+      display_name: r.display_name,
+      is_available: r.is_available,
+      ownerMatchesAuthUid: !!userId && r.owner_user_id === userId,
+    });
+  });
+  if (userId) {
+    const ownedVisible = rows.filter((r) => r.owner_user_id === userId).length;
+    console.log(`[Fleet][diag] readable rows owned by auth.uid(): ${ownedVisible}`);
+  }
+}
+
 /** Deduplicate fleet rows by source_vehicle_id, falling back to row id. */
 export function dedupeFleetRows(rows: FleetAvailableVehicle[]): FleetAvailableVehicle[] {
   const seen = new Set<string>();
@@ -196,10 +238,22 @@ export function mapFleetVehicleToVehicle(
 export async function getAvailableVehicles(): Promise<FleetLoadResult> {
   const {
     data: { user },
+    error: userError,
   } = await supabase.auth.getUser();
   const userId = user?.id ?? null;
   console.log(`[Fleet] authenticated user exists: ${!!userId}`);
   console.log(`[Fleet] authenticated user id: ${userId ?? '(none)'}`);
+  if (userError) {
+    console.warn('[Fleet] auth.getUser error:', {
+      message: userError.message,
+      status: (userError as { status?: number }).status,
+    });
+  }
+
+  // DEV-only: unfiltered read to reveal exactly what RLS lets this user see.
+  if (__DEV__) {
+    await logReadableFleetRows(userId);
+  }
 
   const publicPromise = supabase
     .from('fleet_available_vehicles')
@@ -245,8 +299,17 @@ export async function getAvailableVehicles(): Promise<FleetLoadResult> {
 
   const ownerCount = ownerRows.length;
   const publicCount = publicRows.length;
-  console.log(`[Fleet] owned vehicle count: ${ownerCount}`);
-  console.log(`[Fleet] public vehicle count: ${publicCount}`);
+  console.log(`[Fleet] owned query count: ${ownerCount}`);
+  console.log(`[Fleet] public query count: ${publicCount}`);
+
+  // Ownership id comparison — did any readable row's owner_user_id match the
+  // authenticated auth.uid()? (Ids only; never secrets.)
+  if (userId) {
+    const ownerIdMatches = [...ownerRows, ...publicRows].some(
+      (r) => r.owner_user_id === userId
+    );
+    console.log(`[Fleet] owner_user_id matched auth.uid(): ${ownerIdMatches}`);
+  }
 
   // Owner-first so owned vehicles win de-duplication and keep accessType 'owner'.
   const mergedRows = dedupeFleetRows([...ownerRows, ...publicRows]);
