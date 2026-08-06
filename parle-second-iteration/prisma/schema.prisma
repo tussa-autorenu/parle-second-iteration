@@ -148,7 +148,10 @@ model TemporaryVehicleAccess {
   vehicleId    String
   vin          String?
   friendlyName String?
-  shareCodeId  String
+  // Null for renter "public claim" grants (POST /vehicles/:id/claim); set for
+  // grants created by redeeming a share code. Used to decide whether ending a
+  // ride should return the vehicle to public availability.
+  shareCodeId  String?
   permissions  Json
   startsAt     DateTime  @default(now())
   expiresAt    DateTime

@@ -13,6 +13,7 @@ import { config } from "./config/env.js";
 import { authPlugin } from "./middleware/auth.js";
 import { vehiclesRoutes } from "./routes/vehicles.js";
 import { commandsRoutes } from "./routes/commands.js";
+import { rentalRoutes } from "./routes/rentals.js";
 import { logsRoutes } from "./routes/logs.js";
 import { teslaAuthRoutes } from "./routes/teslaAuth.js";
 import { shareRoutes } from "./routes/share.js";
@@ -115,6 +116,7 @@ export async function buildApp() {
   await app.register(teslaAuthRoutes);
   await app.register(vehiclesRoutes);
   await app.register(commandsRoutes);
+  await app.register(rentalRoutes);
   await app.register(logsRoutes);
   await app.register(shareRoutes);
 

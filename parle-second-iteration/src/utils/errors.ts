@@ -19,6 +19,9 @@ export type ErrorReason =
   | "vehicle_in_service"
   | "auth_expired_or_invalid"
   | "generic_tesla_upstream_error"
+  | "server_misconfigured"
+  | "auth_upstream_error"
+  | "lock_failed"
   | "unknown";
 
 export class ApiError extends Error {

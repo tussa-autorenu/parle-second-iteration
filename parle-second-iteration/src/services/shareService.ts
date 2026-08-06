@@ -432,7 +432,46 @@ export type VehicleAuth = {
   tokenResult: AccessTokenResult;
   accessId?: string;
   ownerUserId?: string;
+  /** True when ownership was confirmed against public.fleet_available_vehicles. */
+  ownerVerifiedViaFleet?: boolean;
 };
+
+/**
+ * Confirm the caller owns the requested vehicle per the renter fleet table
+ * (`public.fleet_available_vehicles`), matched by `source_vehicle_id` (falling
+ * back to the row id). This table lives in the SAME Supabase Postgres this
+ * service already connects to via `DATABASE_URL`, so we read it directly — no
+ * extra client or credential is introduced.
+ *
+ * Ownership is keyed on `owner_user_id`, which the fleet web app writes as the
+ * Supabase `auth.uid()` — the exact value the mobile app sends as
+ * `x-triggered-by`. Never throws: a lookup failure returns false so the caller
+ * falls back to the linked-Tesla-account owner path.
+ */
+async function ownsVehicleViaFleet(
+  userId: string,
+  vehicleId: string,
+): Promise<boolean> {
+  if (!userId || userId === "system") return false;
+  try {
+    const rows = await prisma.$queryRaw<Array<{ owner_user_id: string }>>`
+      SELECT owner_user_id
+      FROM public.fleet_available_vehicles
+      WHERE owner_user_id = ${userId}
+        AND (source_vehicle_id = ${vehicleId} OR id::text = ${vehicleId})
+      LIMIT 1
+    `;
+    return rows.length > 0;
+  } catch (err) {
+    // fleet_available_vehicles may be absent in some environments — never let an
+    // ownership lookup crash a command; fall back to the Tesla-linked path.
+    console.warn(
+      "[authz] fleet ownership lookup failed:",
+      err instanceof Error ? err.message : String(err),
+    );
+    return false;
+  }
+}
 
 /**
  * Authorize a vehicle action for `triggeredBy` against `vehicleId`.
@@ -451,17 +490,43 @@ export async function authorizeVehicleAction(
   vehicleId: string,
   command: string,
 ): Promise<VehicleAuth> {
-  // Owner path — caller has their own Tesla connection. A linked account whose
+  // Explicit ownership: does this caller own the vehicle per the renter fleet
+  // table (owner_user_id == caller, matched by source_vehicle_id)?
+  const ownsViaFleet = await ownsVehicleViaFleet(triggeredBy, vehicleId);
+
+  // Owner path — the caller either owns the vehicle in the fleet table OR has
+  // their own linked Tesla connection (which serves the web app owner dashboard
+  // for vehicles not published to the renter fleet). A linked account whose
   // token merely failed to refresh is still treated as the owner so the caller
   // surfaces the correct "re-link Tesla" error (rather than an access error).
   const ownerToken = await getUserAccessToken(triggeredBy);
-  if (ownerToken.ok || ownerToken.reason === "refresh_failed") {
-    return { role: "owner", tokenUserId: triggeredBy, tokenResult: ownerToken };
+  const isOwnerByToken = ownerToken.ok || ownerToken.reason === "refresh_failed";
+
+  if (ownsViaFleet || isOwnerByToken) {
+    console.log("[authz] decision", {
+      command,
+      role: "owner",
+      ownerVerifiedViaFleet: ownsViaFleet,
+      ownerByTeslaLink: isOwnerByToken,
+    });
+    return {
+      role: "owner",
+      tokenUserId: triggeredBy,
+      tokenResult: ownerToken,
+      ownerUserId: triggeredBy,
+      ownerVerifiedViaFleet: ownsViaFleet,
+    };
   }
 
   // Guest path — must have an active access record for this vehicle.
   const access = await findActiveAccess(triggeredBy, vehicleId);
   if (!access) {
+    console.log("[authz] decision", {
+      command,
+      role: "denied",
+      ownerVerifiedViaFleet: false,
+      hasActiveShare: false,
+    });
     throw new ApiError(
       403,
       "access_denied",
@@ -482,6 +547,12 @@ export async function authorizeVehicleAction(
   }
 
   const ownerTokenForGuest = await getUserAccessToken(access.ownerUserId);
+  console.log("[authz] decision", {
+    command,
+    role: "guest",
+    hasActiveShare: true,
+    accessId: access.id,
+  });
   return {
     role: "guest",
     tokenUserId: access.ownerUserId,
