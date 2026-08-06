@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   ScrollView,
   Text,
@@ -9,12 +10,14 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, {
   Easing,
+  FadeIn,
   FadeInUp,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
 } from 'react-native-reanimated';
 import { StatusBar } from 'expo-status-bar';
+import { X } from 'lucide-react-native';
 
 import { BoltIcon, CheckIcon, LockIcon, LockOpenIcon } from '@/src/components/Icons';
 import { getCommandBlockReason, type Vehicle } from '@/src/data/vehicles';
@@ -167,6 +170,30 @@ export function RideStartedScene({ vehicle, rideStartedAt, onEndRide }: Props) {
     }
   };
 
+  // X (top-right) during an active ride. We never silently end a ride: closing
+  // is only safe once the ride is ended, so the X asks the renter to confirm
+  // and routes them through the same lock-then-end path as the End Ride CTA.
+  const handleClose = () => {
+    if (busy) return;
+    console.log('[Ride] X pressed → confirm end before leaving', {
+      accessType: accessType ?? '(unknown)',
+    });
+    Alert.alert(
+      'Ride still active',
+      'Your ride is still active. End the ride before leaving?',
+      [
+        { text: 'Continue Ride', style: 'cancel' },
+        {
+          text: 'End Ride',
+          style: 'destructive',
+          onPress: () => {
+            void handleEndRide();
+          },
+        },
+      ]
+    );
+  };
+
   const modelLabel = vehicle?.model ?? 'Tesla';
   const colorLabel = vehicle?.color ?? 'White';
   const batteryLabel = liveBatteryPct == null ? '—' : `${liveBatteryPct}%`;
@@ -189,9 +216,27 @@ export function RideStartedScene({ vehicle, rideStartedAt, onEndRide }: Props) {
         contentContainerStyle={{ paddingBottom: 24 }}
         showsVerticalScrollIndicator={false}
       >
+        {/* ---- Close (X) button — top-right. Confirms before ending. ---- */}
+        <Animated.View
+          className="flex-row items-center justify-end px-6 pt-2"
+          entering={FadeIn.duration(200)}
+        >
+          <Pressable
+            onPress={handleClose}
+            disabled={busy !== null}
+            hitSlop={12}
+            accessibilityRole="button"
+            accessibilityLabel="Close ride"
+            className="bg-parle-desat-2 rounded-full p-2"
+            style={{ opacity: busy !== null ? 0.6 : 1 }}
+          >
+            <X size={24} color="#1d0633" strokeWidth={2} />
+          </Pressable>
+        </Animated.View>
+
         {/* ---- Success badge ---- */}
         <Animated.View
-          className="self-center items-center justify-center mt-6"
+          className="self-center items-center justify-center mt-2"
           style={[{ width: 80, height: 80 }, checkAnimatedStyle]}
         >
           {/* Soft outer halo */}

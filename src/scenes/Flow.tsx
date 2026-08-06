@@ -1,4 +1,4 @@
-import { useReducer } from 'react';
+import { useEffect, useReducer } from 'react';
 import { View } from 'react-native';
 
 import { useAuth } from '@/lib/auth';
@@ -8,6 +8,11 @@ import { LoadingScene } from './LoadingScene';
 import { RideStartedScene } from './RideStartedScene';
 import { VehicleDetailScene } from './VehicleDetailScene';
 import { VehicleListScene } from './VehicleListScene';
+
+/** DEV-only flow log — safe (ids + access type only, never secrets/tokens). */
+function flowLog(event: string, data?: Record<string, unknown>): void {
+  if (__DEV__) console.log(`[Flow] ${event}`, data ?? '');
+}
 
 /**
  * The Flow orchestrator owns the step-machine state for the renter MVP and
@@ -37,6 +42,45 @@ export function Flow() {
   const selectedVehicle =
     vehicles.find((vehicle) => vehicle.id === state.selectedVehicleId) ?? null;
 
+  // DEV: log which scene is mounted (route) on every transition.
+  useEffect(() => {
+    flowLog('selected scene', { scene: state.scene });
+  }, [state.scene]);
+
+  // Same live-store lookup for every access type: whichever card was tapped,
+  // we render the SAME detail + ride scenes with the SAME live Vehicle object.
+  const handleSelectVehicle = (id: string) => {
+    const tapped = vehicles.find((vehicle) => vehicle.id === id) ?? null;
+    flowLog('vehicle tapped', {
+      vehicleId: id,
+      accessType: tapped?.accessType ?? '(unknown)',
+      sourceVehicleIdExists: !!tapped?.sourceVehicleId,
+      commandVehicleIdExists: !!tapped?.commandVehicleId,
+      route: 'vehicleDetail',
+    });
+    dispatch({ type: 'VEHICLE_SELECTED', id });
+  };
+
+  const handleStartRide = () => {
+    flowLog('Start Ride requested', {
+      vehicleId: selectedVehicle?.id ?? '(none)',
+      accessType: selectedVehicle?.accessType ?? '(unknown)',
+      sourceVehicleIdExists: !!selectedVehicle?.sourceVehicleId,
+    });
+    dispatch({ type: 'RIDE_STARTED' });
+    flowLog('Start Ride result', { route: 'rideStarted', started: true });
+  };
+
+  const handleEndRide = () => {
+    flowLog('End Ride result', { route: 'vehicleList' });
+    dispatch({ type: 'RIDE_ENDED' });
+  };
+
+  const handleBackToList = () => {
+    flowLog('X/back on detail', { route: 'vehicleList' });
+    dispatch({ type: 'BACK_TO_LIST' });
+  };
+
   return (
     <View className="flex-1 bg-white">
       {state.scene === 'loading' && (
@@ -56,7 +100,7 @@ export function Flow() {
           isRefreshing={isRefreshing}
           onRefresh={refresh}
           onRedeemCode={redeem}
-          onSelectVehicle={(id) => dispatch({ type: 'VEHICLE_SELECTED', id })}
+          onSelectVehicle={handleSelectVehicle}
           onLogoTap={() => dispatch({ type: 'LOGO_TAPPED' })}
           onSignOut={signOut}
         />
@@ -65,8 +109,8 @@ export function Flow() {
       {state.scene === 'vehicleDetail' && (
         <VehicleDetailScene
           vehicle={selectedVehicle}
-          onBack={() => dispatch({ type: 'BACK_TO_LIST' })}
-          onStartRide={() => dispatch({ type: 'RIDE_STARTED' })}
+          onBack={handleBackToList}
+          onStartRide={handleStartRide}
         />
       )}
 
@@ -74,7 +118,7 @@ export function Flow() {
         <RideStartedScene
           vehicle={selectedVehicle}
           rideStartedAt={state.rideStartedAt}
-          onEndRide={() => dispatch({ type: 'RIDE_ENDED' })}
+          onEndRide={handleEndRide}
         />
       )}
     </View>
